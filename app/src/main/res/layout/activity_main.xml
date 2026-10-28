@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:orientation="vertical"
+        android:padding="20dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:layout_marginBottom="4dp" />
+
+        <TextView
+            android:id="@+id/text_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="状态：未校准"
+            android:gravity="center"
+            android:textSize="14sp"
+            android:textColor="#6A5ACD"
+            android:layout_marginBottom="16dp" />
+
+        <Button
+            android:id="@+id/btn_start"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:text="▶ 开始打盗匪"
+            android:textSize="20sp"
+            android:backgroundTint="#6A5ACD" />
+
+        <Button
+            android:id="@+id/btn_calib"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="① 一键校准（约10秒）"
+            android:layout_marginTop="12dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="高级设置"
+            android:textStyle="bold"
+            android:layout_marginTop="16dp" />
+
+        <LinearLayout
+            android:orientation="horizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="每次出征后等待(秒)"
+                android:gravity="center_vertical"
+                android:textSize="13sp" />
+            <EditText
+                android:id="@+id/edit_wait"
+                android:layout_width="80dp"
+                android:layout_height="wrap_content"
+                android:hint="20"
+                android:inputType="number"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:orientation="horizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="匹配灵敏度(20-120)"
+                android:gravity="center_vertical"
+                android:textSize="13sp" />
+            <EditText
+                android:id="@+id/edit_thresh"
+                android:layout_width="80dp"
+                android:layout_height="wrap_content"
+                android:hint="55"
+                android:inputType="number"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="拟人化程度（让操作更像真人）"
+            android:textStyle="bold"
+            android:layout_marginTop="16dp" />
+
+        <RadioGroup
+            android:id="@+id/radio_human"
+            android:orientation="horizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp">
+            <RadioButton android:id="@+id/rb_low" android:layout_width="0dp" android:layout_height="wrap_content" android:text="轻" android:layout_weight="1" />
+            <RadioButton android:id="@+id/rb_mid" android:layout_width="0dp" android:layout_height="wrap_content" android:text="中" android:layout_weight="1" />
+            <RadioButton android:id="@+id/rb_high" android:layout_width="0dp" android:layout_height="wrap_content" android:text="强" android:layout_weight="1" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/help_text"
+            android:textSize="12sp"
+            android:layout_marginTop="16dp" />
+
+    </LinearLayout>
+</ScrollView>
