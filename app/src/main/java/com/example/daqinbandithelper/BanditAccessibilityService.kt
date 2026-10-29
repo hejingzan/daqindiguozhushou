@@ -43,8 +43,11 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.random.Random
 
@@ -193,6 +196,17 @@ class BanditAccessibilityService : AccessibilityService() {
     private var scanIndex = 0
     private var levelSkipStreak = 0
     private var levelFailOpen = false
+
+    // ---------------- 保障层：安全 / 稳定性 ----------------
+    // 对应设计文档「第七阶段」：超时、异常、随机化、日志、熔断。
+    private var lastStage = ST_FIND
+    private var stageEnteredAt = 0L
+    private var errorStreak = 0
+    private var recoveryPending = false
+    private val botLogFile by lazy { File(filesDir, "bot.log") }
+    private const val GUARD_INTERVAL_MS = 3000L          // 守护定时器轮询间隔
+    private const val CIRCUIT_LIMIT = 6                  // 连续异常上限，超过即熔断停止
+    private const val STAGE_HARD_TIMEOUT_MS = 60000L     // 任一阶段硬超时（兜底，战斗等待除外）
 
     // 拖动悬浮窗用
     private var dragStartX = 0f
@@ -975,6 +989,137 @@ class BanditAccessibilityService : AccessibilityService() {
     /** 步骤之间的拟人化间隔：1~2 秒不等（用户要求每步之间停顿） */
     private fun stepDelay(): Long = Random.nextLong(1000, 2000)
 
+    // ===================== 保障层：安全 / 稳定性 =====================
+    // 按设计文档第七阶段实现：状态机守护、熔断、操作日志、弹窗处理、调试截图。
+
+    /** 操作日志：追加到 filesDir/bot.log，并同步输出到 logcat（便于事后回溯卡点） */
+    private fun logOp(msg: String) {
+        val ts = SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(Date())
+        val line = "$ts [${stageName(stage)}] $msg\n"
+        try { botLogFile.appendText(line) } catch (_: Exception) { }
+        Log.i(TAG, line.trimEnd())
+    }
+
+    private fun stageName(s: Int): String = when (s) {
+        ST_FIND -> "找盗匪"
+        ST_ATTACK -> "点讨伐"
+        ST_SELECT -> "点全选"
+        ST_CONFIRM -> "点确定"
+        ST_WAIT -> "战斗等待"
+        else -> "未知($s)"
+    }
+
+    /** 调试截图：把当前屏幕存到 filesDir/debug/，便于事后分析「停在哪个界面」 */
+    private fun saveDebugShot(tag: String) {
+        try {
+            overlayView?.visibility = View.GONE
+            val b = captureBitmap()
+            overlayView?.visibility = View.VISIBLE
+            if (b == null) return
+            val dir = File(filesDir, "debug"); dir.mkdirs()
+            val f = File(dir, "dbg_${System.currentTimeMillis()}_$tag.png")
+            f.outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 90, it) }
+            b.recycle()
+            logOp("DEBUG SHOT -> ${f.name}")
+        } catch (e: Exception) { Log.e(TAG, "saveDebugShot err", e) }
+    }
+
+    /**
+     * 全局弹窗优先处理：任何状态下先尝试关闭挡住操作的弹窗（活动公告 / 网络提示等）。
+     * 仅点击明确是「关闭」语义的安全按钮（关闭 / ✕ / × / X），
+     * 绝不点「确定 / 确认」等可能触发动作的按钮，避免误操作。
+     */
+    private fun dismissBlockingPopups(): Boolean {
+        return try {
+            val root = rootInActiveWindow ?: return false
+            val closeWords = setOf("关闭", "✕", "×", "X", "x")
+            val targets = mutableListOf<AccessibilityNodeInfo>()
+            val stack = ArrayDeque<AccessibilityNodeInfo>().apply { addLast(root) }
+            while (stack.isNotEmpty()) {
+                val node = stack.removeFirst()
+                if (node.isClickable) {
+                    val t = node.text?.toString()?.trim() ?: ""
+                    if (t in closeWords) targets.add(node)
+                }
+                for (i in 0 until node.childCount) node.getChild(i)?.let { stack.addLast(it) }
+            }
+            if (targets.isEmpty()) return false
+            // 取最靠上的可点关闭按钮（通常是弹窗自身的关闭键）
+            val best = targets.maxByOrNull { it.boundsInScreen.top } ?: return false
+            val ok = best.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            logOp("dismiss popup (${best.text}) -> $ok")
+            ok
+        } catch (e: Exception) {
+            Log.e(TAG, "dismissBlockingPopups err", e); false
+        }
+    }
+
+    /** 阶段超时后回到「找盗匪」重新来过（去重，避免重复排程） */
+    private fun backToSafe() {
+        if (recoveryPending) return
+        recoveryPending = true
+        stage = ST_FIND
+        lastBandit = null
+        stageTry = 0
+        stageDeadline = 0L
+        stageEnteredAt = System.currentTimeMillis()
+        handler.postDelayed({
+            recoveryPending = false
+            if (running) stageFind()
+        }, 800)
+    }
+
+    /** 守护定时器：弹窗处理 → 状态切换日志 → 阶段超时恢复 → 连续异常熔断 */
+    private val guardTick = object : Runnable {
+        override fun run() {
+            if (!running) return
+            try {
+                dismissBlockingPopups()
+                if (stage != lastStage) {
+                    logOp("STATE ${stageName(lastStage)} -> ${stageName(stage)}")
+                    lastStage = stage
+                    stageEnteredAt = System.currentTimeMillis()
+                    if (stage == ST_WAIT) errorStreak = 0   // 进入战斗 = 有进展，清零连续异常
+                }
+                val now = System.currentTimeMillis()
+                val dead = stageDeadline > 0 && now > stageDeadline
+                val hard = now - stageEnteredAt > STAGE_HARD_TIMEOUT_MS
+                if ((dead || hard) && stage != ST_WAIT) {
+                    errorStreak++
+                    logOp("STAGE TIMEOUT ${stageName(stage)} (dead=$dead hard=$hard) streak=$errorStreak")
+                    saveDebugShot("to_${stageName(stage)}")
+                    backToSafe()
+                    if (errorStreak >= CIRCUIT_LIMIT) {
+                        logOp("CIRCUIT BREAKER 连续异常过多，已停止")
+                        saveDebugShot("circuit")
+                        toast("连续异常过多，已自动停止（看 bot.log / debug/）")
+                        updateNotif("熔断：连续异常，已停止", false)
+                        stopLoop()
+                        return
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "guardTick err", e)
+            }
+            handler.postDelayed(this, GUARD_INTERVAL_MS)
+        }
+    }
+
+    private fun startGuard() {
+        lastStage = stage
+        stageEnteredAt = System.currentTimeMillis()
+        errorStreak = 0
+        recoveryPending = false
+        handler.removeCallbacks(guardTick)
+        handler.postDelayed(guardTick, GUARD_INTERVAL_MS)
+        logOp("GUARD START")
+    }
+
+    private fun stopGuard() {
+        handler.removeCallbacks(guardTick)
+        logOp("GUARD STOP")
+    }
+
     /** 精确拖动地图（手指位移 fx,fy）。慢速拖动，减少游戏地图的惯性滑动误差 */
     private fun dragBy(fx: Int, fy: Int) {
         if (screenWidth == 0 || screenHeight == 0) return
@@ -1223,6 +1368,8 @@ class BanditAccessibilityService : AccessibilityService() {
         setOverlayToggle(true)
         updateOverlayStatus("运行中 · 找盗匪…")
         stage = ST_FIND
+        logOp("START 挂机开始")
+        startGuard()
         handler.postDelayed({ stageFind() }, 400)
     }
 
@@ -1231,10 +1378,12 @@ class BanditAccessibilityService : AccessibilityService() {
         pickMode = false
         prefs.setEnabled(false)
         handler.removeCallbacksAndMessages(null)
+        stopGuard()
         removePickOverlay()
         updateNotif("已停止", false)
         setOverlayToggle(false)
         updateOverlayStatus("已停止 · 点「开始」继续")
+        logOp("STOP 已停止")
     }
 
     /** 是否处于活动时段内（盗匪是限时活动） */
