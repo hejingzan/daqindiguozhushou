@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var editLiPixel: EditText
     private lateinit var editBanditName: EditText
     private lateinit var editCenterRatio: EditText
+    private lateinit var editNameOffset: EditText
     private lateinit var editActStart: EditText
     private lateinit var editActEnd: EditText
     private lateinit var editNoBandit: EditText
@@ -172,6 +173,7 @@ class MainActivity : AppCompatActivity() {
         editLiPixel = findViewById(R.id.edit_lipixel)
         editBanditName = findViewById(R.id.edit_banditname)
         editCenterRatio = findViewById(R.id.edit_center_ratio)
+        editNameOffset = findViewById(R.id.edit_name_offset)
         editActStart = findViewById(R.id.edit_act_start)
         editActEnd = findViewById(R.id.edit_act_end)
         editNoBandit = findViewById(R.id.edit_nobandit)
@@ -196,6 +198,7 @@ class MainActivity : AppCompatActivity() {
         editNoBandit.setText(prefs.getNoBanditWaitSec().toString())
         editBanditName.setText(prefs.getBanditNameKeywords().joinToString(","))
         editCenterRatio.setText(trimFloat(prefs.getCenterRadiusRatio()))
+        editNameOffset.setText(trimFloat(prefs.getNameBodyOffsetRatio()))
         val actStart = prefs.getActivityStartMin()
         val actEnd = prefs.getActivityEndMin()
         if (actStart >= 0) editActStart.setText(fmtMin(actStart))
@@ -420,6 +423,9 @@ class MainActivity : AppCompatActivity() {
         // 屏幕中心搜索范围（占屏比例，≈游戏内1000里）
         val ratio = editCenterRatio.text.toString().toFloatOrNull()?.coerceIn(0.1f, 0.95f) ?: 0.48f
         prefs.setCenterRadiusRatio(ratio)
+        // 盗匪名字标签 → 实体点击点 下移比例（点名落空时点不中盗匪，调大此值）
+        val noff = editNameOffset.text.toString().toFloatOrNull()?.coerceIn(0f, 0.3f) ?: 0.05f
+        prefs.setNameBodyOffsetRatio(noff)
 
         // 等级筛选
         val lv = if (radioLevel.checkedRadioButtonId == R.id.rb_level_only) 1 else 0

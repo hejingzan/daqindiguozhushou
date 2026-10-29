@@ -180,6 +180,17 @@ class Prefs(context: Context) {
         sp.getStringSet("bandit_names", defaultBanditNames) ?: defaultBanditNames
     fun setBanditNameKeywords(v: Set<String>) = sp.edit().putStringSet("bandit_names", v).apply()
 
+    // ---------------- 盗匪名字标签 → 实体点击点 偏移 ----------------
+
+    /**
+     * 文字识别拿到的是「盗匪头顶名字标签」的位置，而真正可点击的盗匪实体在名字标签下方。
+     * 此值 = 从名字标签中心向下偏移的「屏幕高度比例」（默认 0.05 ≈ 5% 屏高），
+     * 让点击点落到盗匪实体上而不是名字文字上。不同游戏/分辨率可在此微调。
+     */
+    fun getNameBodyOffsetRatio(): Float = sp.getFloat("name_body_offset", 0.05f)
+    fun setNameBodyOffsetRatio(v: Float) =
+        sp.edit().putFloat("name_body_offset", v.coerceIn(0f, 0.3f)).apply()
+
     // ---------------- 屏幕中心搜索范围 ----------------
 
     /**

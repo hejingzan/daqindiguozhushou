@@ -770,13 +770,29 @@ class BanditAccessibilityService : AccessibilityService() {
             val rect = Rect()
             try { n.getBoundsInScreen(rect) } catch (_: Exception) { continue }
             if (rect.isEmpty) continue
-            val bx = rect.centerX(); val by = rect.centerY()
+            // 文字节点是「盗匪头顶名字标签」；可点击的盗匪实体在名字标签下方。
+            // 向下偏移 = 名字标签高度 * 1.5 + 屏高 * 偏移比例，让点击点落到实体而非名字上。
+            val bx = rect.centerX()
+            val off = (rect.height() * 1.5 + screenHeight * prefs.getNameBodyOffsetRatio()).toInt()
+            val by = (rect.bottom + off).coerceIn(2, (screenHeight - 2).coerceAtLeast(3))
             if ((bx - cx).toLong() * (bx - cx) + (by - cy).toLong() * (by - cy) <= r.toLong() * r) {
                 cands.add(BanditCand(bx, by, 9999))
             }
             n.recycle()
         }
         return cands
+    }
+
+    /**
+     * 实时重新定位最近盗匪：重新扫描屏幕、范围过滤、取离中心最近者。
+     * 用于「点击前 / 进攻击前」刷新坐标，使点击点跟随盗匪实时移动。
+     * 返回已是「实体坐标」（findBanditsByText 已向下偏移到实体）。
+     */
+    private fun reacquireBandit(): Point? {
+        val all = findBanditCandidatesAll()
+        val cands = filterWithin(all.first, centerX(), centerY(), centerRadiusPx())
+        val np = pickNearestBandit(cands, centerX(), centerY())
+        return np?.let { Point(it.x, it.y) }
     }
 
     /**
@@ -1265,12 +1281,15 @@ class BanditAccessibilityService : AccessibilityService() {
             missCount = 0
             noBanditStreak = 0
             lastBandit = p
-            updateNotif("已选中盗匪，等菜单")
-            updateOverlayStatus("已点盗匪 · 等菜单")
-            // 选中盗匪前先停 1~2 秒（拟人化 + 等 UI 反应）
+            updateNotif("已锁定盗匪，点击前重新定位")
+            updateOverlayStatus("已锁定盗匪 · 准备点击(跟随移动)")
+            // 点击前再实时重新定位一次：盗匪在 1~2s 停顿期间会移动，必须跟随最新位置
             handler.postDelayed({
                 if (!running) return@postDelayed
-                dispatchTap(p.x, p.y) {
+                val live = reacquireBandit() ?: p
+                lastBandit = live
+                updateOverlayStatus("点击盗匪 @(${live.x},${live.y})")
+                dispatchTap(live.x, live.y) {
                     stage = ST_ATTACK
                     stageTry = 0
                     stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
@@ -1381,6 +1400,9 @@ class BanditAccessibilityService : AccessibilityService() {
 
     private fun stageAttack() {
         if (!running) return
+        // 盗匪可能移动了，进入攻击阶段先重新定位一次，菜单扫描中心跟随最新位置
+        val live = reacquireBandit()
+        if (live != null) lastBandit = live
         val bandit = lastBandit
         if (bandit == null) {
             stage = ST_FIND
@@ -1422,13 +1444,15 @@ class BanditAccessibilityService : AccessibilityService() {
      */
     private fun attemptAttackButton(btns: List<BtnCand>, idx: Int, bandit: Point, label: String) {
         if (!running) return
+        // 重新定位盗匪，确保收尾「点盗匪收起菜单」落在最新位置（跟随移动）
+        val cur = reacquireBandit() ?: bandit
         if (idx >= btns.size) {
             // 所有候选都试过仍没弹出面板：先收起菜单，再重试或几何兜底
             if (stageTry >= 2) {
-                dispatchTap(bandit.x, bandit.y) { backToWaiting("菜单按钮未点开") }
+                dispatchTap(cur.x, cur.y) { backToWaiting("菜单按钮未点开") }
                 return
             }
-            dispatchTap(bandit.x, bandit.y) {
+            dispatchTap(cur.x, cur.y) {
                 stageTry++
                 handler.postDelayed({ stageAttack() }, 500)
             }
