@@ -6,7 +6,7 @@ on:
     branches: [ "main", "master" ]
 
 permissions:
-  contents: read
+  contents: write
   checks: write
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 构建 Debug APK 并回写日志
+      - name: 构建 Debug APK 并回写日志到提交评论
         continue-on-error: true
         env:
           TOKEN: ${{ github.token }}
@@ -31,36 +31,27 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon > build_log.txt 2>&1 || true
-          echo "=== BUILD_EXIT_DONE ===" >> build_log.txt
-          # 同时写入 step summary 作为备份
-          tail -c 60000 build_log.txt > "$GITHUB_STEP_SUMMARY" || true
+          echo "=== BUILD_DONE ===" >> build_log.txt
           python3 - <<'PY'
-          import json, os, urllib.request
+          import json, os, urllib.request, urllib.error
           token = os.environ['TOKEN']; sha = os.environ['SHA']; repo = os.environ['REPO']
-          hdr = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+          hdr = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                 "Content-Type": "application/json"}
           try:
-              txt = open("build_log.txt", encoding="utf-8", errors="replace").read()[-60000:]
+              txt = open("build_log.txt", encoding="utf-8", errors="replace").read()
           except Exception as e:
               txt = f"no build_log.txt: {e}"
-          # 取检查运行 id
-          url = f"https://api.github.com/repos/{repo}/commits/{sha}/check-runs?per_page=5"
+          # 截断到 50000 字符，避免超出评论上限
+          if len(txt) > 50000:
+              txt = "...(前段省略)...\n" + txt[-50000:]
+          body = "**BUILD LOG**\n```\n" + txt + "\n```"
+          url = f"https://api.github.com/repos/{repo}/commits/{sha}/comments"
+          req = urllib.request.Request(url, data=json.dumps({"body": body}).encode("utf-8"), headers=hdr, method="POST")
           try:
-              data = json.load(urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=30))
-              crid = data.get("check_runs", [{}])[0].get("id")
-          except Exception as e:
-              print("get check-run failed:", e); crid = None
-          if crid:
-              patch = json.dumps({"output": {"title": "build log", "summary": txt}}).encode("utf-8")
-              preq = urllib.request.Request(
-                  f"https://api.github.com/repos/{repo}/check-runs/{crid}",
-                  data=patch, headers={**hdr, "Content-Type": "application/json"}, method="PATCH")
-              try:
-                  urllib.request.urlopen(preq, timeout=30)
-                  print("check-run summary updated, crid=", crid)
-              except Exception as e:
-                  print("patch failed:", e)
-          else:
-              print("no check run id")
+              resp = urllib.request.urlopen(req, timeout=30)
+              print("comment posted, status", resp.status)
+          except urllib.error.HTTPError as e:
+              print("post failed", e.code, e.read().decode(errors="replace")[:500])
           PY
 
       - name: 上传 APK 产物
