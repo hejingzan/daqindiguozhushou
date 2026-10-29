@@ -5,6 +5,9 @@ on:
   push:
     branches: [ "main", "master" ]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,19 +21,21 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 构建 Debug APK（捕获日志）
+      - name: 构建 Debug APK（捕获日志，不阻断）
         continue-on-error: true
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon 2>&1 | tee build_log.txt
-          echo "GRADLE_EXIT=${PIPESTATUS[0]}"
+          ./gradlew assembleDebug --no-daemon 2>&1 | tee build_log.txt || true
 
-      - name: 上传构建日志（诊断用）
+      - name: 把构建日志推回仓库（便于查看编译错误）
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: build_log.txt
+        run: |
+          git config user.email "ci@ci.local"
+          git config user.name "ci-bot"
+          cp build_log.txt ci_build_log.txt
+          git add ci_build_log.txt
+          git commit -m "ci: build log" || echo "no changes"
+          git push || echo "push failed"
 
       - name: 上传 APK 产物
         if: always()
