@@ -632,6 +632,55 @@ class BanditAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * 自动找盗匪（无模板时也能用）：在地图主区域扫描「红褐色密集小团」。
+     * 盗匪图标是红褐色小兵，与地图底色（绿/蓝）差异明显，用格子密度法取最红的局部。
+     * 自动校准首次调用；之后 stageFind 也用它兜底。
+     */
+    private fun scanBanditByColor(): Point? {
+        overlayView?.visibility = View.GONE
+        val screen = captureBitmap() ?: return null
+        try {
+            // 地图主区域：排除顶栏(~11%)、底栏 UI(~18%) 与边缘
+            val x0 = (screen.width * 0.04).toInt()
+            val x1 = (screen.width * 0.96).toInt()
+            val y0 = (screen.height * 0.11).toInt()
+            val y1 = (screen.height * 0.82).toInt()
+            val cell = 18
+            val cols = ((x1 - x0) / cell).coerceAtLeast(1)
+            val rows = ((y1 - y0) / cell).coerceAtLeast(1)
+            val grid = Array(rows) { IntArray(cols) }
+            var y = y0
+            while (y < y1) {
+                val ri = ((y - y0) / cell).coerceIn(0, rows - 1)
+                var x = x0
+                while (x < x1) {
+                    val ci = ((x - x0) / cell).coerceIn(0, cols - 1)
+                    val c = screen.getPixel(x, y)
+                    val r = Color.red(c); val g = Color.green(c); val b = Color.blue(c)
+                    // 红褐色盗匪：红明显强于蓝、且红略强于绿（排除纯橙按钮与肤色）
+                    if (r > 135 && (r - b) > 55 && (r - g) > 10) grid[ri][ci]++
+                    x += 3
+                }
+                y += 3
+            }
+            var bestRi = -1; var bestCi = -1; var bestN = 0
+            for (i in 0 until rows) {
+                for (j in 0 until cols) {
+                    if (grid[i][j] > bestN) { bestN = grid[i][j]; bestRi = i; bestCi = j }
+                }
+            }
+            if (bestN < 12) return null
+            return Point(x0 + bestCi * cell + cell / 2, y0 + bestRi * cell + cell / 2)
+        } catch (e: Exception) {
+            Log.e(TAG, "scanBanditByColor error", e)
+            return null
+        } finally {
+            overlayView?.visibility = View.VISIBLE
+            screen.recycle()
+        }
+    }
+
+    /**
      * 按颜色定位按钮中心，截取模板存盘。
      * 校准时用，能保证模板和运行时的比对位置像素级对齐。
      */
@@ -806,6 +855,52 @@ class BanditAccessibilityService : AccessibilityService() {
 
     // ---------------- 主循环：盗匪 → 讨伐 → 全选 → 确定 → 等战斗 ----------------
 
+    /**
+     * 首次运行自动校准：不要求用户手动点 7 步，点「开始」后程序自动完成——
+     * 自动扫描地图找到盗匪 → 截取盗匪模板 → 以屏幕中心为搜索原点 → 标记已校准，
+     * 之后正常挂机循环会自动补采「全选/不选/确定」模板。
+     * 若自动扫描不到盗匪（特殊配色/视角），回退提示用户轻点一下即可继续。
+     */
+    private fun autoCalibrate() {
+        if (running || calibrating) return
+        running = true
+        prefs.setEnabled(true)
+        missCount = 0
+        noBanditStreak = 0
+        levelSkipStreak = 0
+        levelFailOpen = false
+        scanIndex = 0
+        scanDx = 0
+        scanDy = 0
+        failPos = null
+        failUntil = 0L
+        waitReady = false
+        waitReadyTries = 0
+        val p = scanBanditByColor()
+        if (p == null) {
+            running = false
+            prefs.setEnabled(false)
+            toast("自动未识别到盗匪：请在地图上点一下盗匪，再点悬浮窗「校准」")
+            updateNotif("自动识别失败，请点一下盗匪后点「校准」", false)
+            updateOverlayStatus("自动识别失败 · 点盗匪后点「校准」")
+            return
+        }
+        captureTemplateFile("bandit", p.x, p.y, 55)
+        banditTpl = loadTpl("bandit")
+        if (!prefs.hasBasePos()) {
+            prefs.setBaseX(screenWidth / 2)
+            prefs.setBaseY(screenHeight / 2)
+            captureTemplateFile("base", screenWidth / 2, screenHeight / 2, 60)
+            baseTpl = loadTpl("base")
+        }
+        prefs.setCalibrated(true)
+        updateNotif("自动识别完成，开始挂机", true)
+        setOverlayToggle(true)
+        updateOverlayStatus("自动识别✅ · 找盗匪…")
+        stage = ST_FIND
+        handler.postDelayed({ stageFind() }, 700)
+    }
+
     private fun startLoop() {
         if (calibrating) {
             toast("正在校准中，请先完成校准")
@@ -822,10 +917,11 @@ class BanditAccessibilityService : AccessibilityService() {
             updateOverlayStatus("未授权录屏 · 回APP授权")
             return
         }
-        if (banditTpl == null || attackTpl == null) {
-            toast("还没校准：请点悬浮窗「校准」")
-            updateNotif("请先校准", false)
-            updateOverlayStatus("未校准 · 点「校准」")
+        if (banditTpl == null) {
+            // 还没识别过盗匪 → 首次自动校准（自动找盗匪 + 自动采按键模板）
+            toast("首次运行：自动识别盗匪与按键中…")
+            updateOverlayStatus("自动识别中…")
+            autoCalibrate()
             return
         }
         running = true
@@ -891,7 +987,7 @@ class BanditAccessibilityService : AccessibilityService() {
             return
         }
         updateOverlayStatus("运行中 · 找盗匪…")
-        val p = matchTemplate(banditTpl)
+        val p = if (banditTpl != null) matchTemplate(banditTpl) else scanBanditByColor()
         if (p != null && !isBlacklisted(p)) {
             if (!levelAccept(p)) {
                 updateNotif("盗匪等级不符，继续找")
@@ -962,10 +1058,16 @@ class BanditAccessibilityService : AccessibilityService() {
             handler.postDelayed({ stageFind() }, 500)
             return
         }
-        val useBattle = prefs.getAttackMode() == 1 && battleTpl != null
+        val wantBattle = prefs.getAttackMode() == 1
+        val useBattle = wantBattle && battleTpl != null
         val tpl = if (useBattle) battleTpl else attackTpl
-        val label = if (useBattle) "战斗" else "讨伐"
-        val exp = radialPos(bandit, if (useBattle) ANG_BATTLE else ANG_ATTACK)
+        val label = if (wantBattle) "战斗" else "讨伐"
+        val exp = radialPos(bandit, if (wantBattle) ANG_BATTLE else ANG_ATTACK)
+        // 自动校准战斗模板（首次用几何位置截一张，避免强制手动校准）
+        if (wantBattle && battleTpl == null) {
+            captureTemplateFile("battle", exp.x, exp.y, 34)
+            battleTpl = loadTpl("battle")
+        }
 
         // 1) 先按几何推算位置附近找模板（最准）
         val near = if (tpl != null) matchNear(tpl, exp.x, exp.y, 70) else null
@@ -1030,6 +1132,11 @@ class BanditAccessibilityService : AccessibilityService() {
     private fun stageSelect() {
         if (!running) return
         val blue = findBlueButton()
+        // 首次自动采「全选」模板（之后比对其状态更稳定）
+        if (blue != null && selectTpl == null) {
+            captureTemplateByColor("select", true, SELECT_TPL_R)
+            selectTpl = loadTpl("select")
+        }
         if (blue == null) {
             // 面板还没弹出来
             if (System.currentTimeMillis() > stageDeadline) {
@@ -1089,6 +1196,11 @@ class BanditAccessibilityService : AccessibilityService() {
             selectTries++
             updateOverlayStatus("点全选 ($selectTries)")
             dispatchTap(blue.x, blue.y) {
+                // 点完「全选」后文字变成「不选」，把这一态也采下来
+                if (selectOffTpl == null) {
+                    captureTemplateByColor("select_off", true, SELECT_TPL_R)
+                    selectOffTpl = loadTpl("select_off")
+                }
                 handler.postDelayed({
                     val b2 = findBlueButton()
                     val s2 = if (b2 != null) selectButtonState(b2) else 0
@@ -1138,6 +1250,10 @@ class BanditAccessibilityService : AccessibilityService() {
         if (!running) return
         val orange = findOrangeButton()
         if (orange != null) {
+            if (confirmTpl == null) {
+                captureTemplateByColor("confirm", false, 22)
+                confirmTpl = loadTpl("confirm")
+            }
             dispatchTap(orange.x, orange.y) {
                 updateNotif("已出征，等待战斗结束")
                 updateOverlayStatus("已出征 · 等战斗")
