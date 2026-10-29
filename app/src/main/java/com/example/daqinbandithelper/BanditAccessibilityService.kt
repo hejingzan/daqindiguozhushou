@@ -106,6 +106,8 @@ class BanditAccessibilityService : AccessibilityService() {
         private const val UI_WAIT_MS = 7000L   // 等 UI 出现的超时
         private const val SELECT_TPL_R = 20    // 全选按钮模板半径
         private const val STATE_DIFF_MAX = 4.0 // 全分辨率比对的「同一状态」阈值（每通道平均差）
+        private const val WAIT_POLL_MS = 6000L // 部队未就绪时，重新试探的间隔
+        private const val WAIT_READY_MAX = 8   // 试探上限（约1分钟），超过按失败换目标
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -175,6 +177,10 @@ class BanditAccessibilityService : AccessibilityService() {
     private var failPos: Point? = null
     private var failUntil = 0L
     private var noBanditStreak = 0
+
+    // 出征后等待部队恢复：true = 正在轮询试探部队是否全部可选
+    private var waitReady = false
+    private var waitReadyTries = 0
 
     // 周边扫描状态：视野中心相对「固定位置」的偏移（像素）
     private var scanDx = 0
@@ -833,6 +839,8 @@ class BanditAccessibilityService : AccessibilityService() {
         scanDy = 0
         failPos = null
         failUntil = 0L
+        waitReady = false
+        waitReadyTries = 0
         initScanOrigin()
         updateNotif("挂机运行中", true)
         setOverlayToggle(true)
@@ -971,8 +979,13 @@ class BanditAccessibilityService : AccessibilityService() {
             dispatchTap(any.x, any.y) { afterAttack(label) }
             return
         }
-        // 3) 兜底：按几何位置直接点
+        // 3) 兜底：按几何位置直接点（试探模式下不乱点，部队可能没回来）
         if (stageTry >= 3) {
+            if (waitReady) {
+                // 点一下盗匪本身，收起可能挂着的放射菜单，再回轮询
+                dispatchTap(bandit.x, bandit.y) { backToWaiting("菜单未出现") }
+                return
+            }
             dispatchTap(exp.x, exp.y) { afterAttack(label) }
             return
         }
@@ -1020,6 +1033,16 @@ class BanditAccessibilityService : AccessibilityService() {
         if (blue == null) {
             // 面板还没弹出来
             if (System.currentTimeMillis() > stageDeadline) {
+                if (waitReady) {
+                    // 试探模式：面板弹不出（可能部队全在打仗）→ 不拉黑盗匪，回轮询
+                    val orangeStill = findOrangeButton()
+                    if (orangeStill != null) {
+                        // 面板其实开着（确定按钮在）→ 按返回键安全关闭
+                        performGlobalAction(GLOBAL_ACTION_BACK)
+                    }
+                    backToWaiting("面板未出现")
+                    return
+                }
                 updateNotif("选兵面板没出来，换下一个")
                 updateOverlayStatus("面板未出现 · 换目标")
                 blacklistLast()
@@ -1080,12 +1103,29 @@ class BanditAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 状态未知（面板开着但文字没认出来）→ 直接去点确定
+        // 状态未知（面板开着但文字没认出来）
+        if (waitReady && selectTpl != null) {
+            // 试探模式：全选按钮认不出，很可能是部队没回来按钮变灰。
+            // 面板确定开着（蓝色按钮已找到）→ 先点一下（灰按钮无反应），
+            // 仍认不出就按返回键关面板（面板开着时返回键=关面板，安全）。
+            if (selectTries < 1) {
+                selectTries++
+                dispatchTap(blue.x, blue.y) {
+                    handler.postDelayed({ stageSelect() }, 600)
+                }
+                return
+            }
+            updateOverlayStatus("部队未就绪 · 关面板再等")
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            backToWaiting("按钮未就绪")
+            return
+        }
         afterSelect()
     }
 
     private fun afterSelect() {
         if (!running) return
+        waitReady = false   // 部队已恢复可选并完成选兵，退出试探模式
         stage = ST_CONFIRM
         stageTry = 0
         stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
@@ -1117,6 +1157,12 @@ class BanditAccessibilityService : AccessibilityService() {
             return
         }
         if (System.currentTimeMillis() > stageDeadline) {
+            if (waitReady) {
+                // 试探模式：面板开着但确定按钮没出现（选兵可能没成功）
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                backToWaiting("确定未出现")
+                return
+            }
             updateNotif("没找到确定按钮，换目标")
             updateOverlayStatus("确定未出现 · 换目标")
             blacklistLast()
@@ -1127,12 +1173,42 @@ class BanditAccessibilityService : AccessibilityService() {
         handler.postDelayed({ stageConfirm() }, 450)
     }
 
-    // —— 阶段 5：等战斗结束 ——
+    // —— 阶段 5：出征后等待部队全部恢复可选 ——
 
+    /**
+     * 按视频流程：出征后不死等固定时间，而是「保底等待 + 轮询试探」——
+     * 等到 battleWaitMs 后开始试探：重新走 找盗匪 → 点盗匪 → 讨伐/战斗 → 看选兵面板，
+     * 面板正常（部队能选）就继续出征；面板弹不出/按钮变灰 = 部队还没回来，
+     * 等 WAIT_POLL_MS 后再试，直到所有队伍恢复可选。
+     */
     private fun stageWait() {
         if (!running) return
-        stage = ST_FIND
+        stage = ST_WAIT
+        waitReady = true
+        waitReadyTries = 0
+        updateNotif("等待部队返回，恢复后自动继续")
+        updateOverlayStatus("等部队返回 · 试探中")
         handler.postDelayed({ stageFind() }, 500)
+    }
+
+    /** 试探失败：部队还没就绪，等一下再来；超过上限按普通失败换目标 */
+    private fun backToWaiting(reason: String) {
+        if (!running) return
+        waitReadyTries++
+        if (waitReadyTries >= WAIT_READY_MAX) {
+            updateNotif("长时间等不到部队，换个目标")
+            updateOverlayStatus("部队久未就绪 · 换目标")
+            waitReady = false
+            waitReadyTries = 0
+            blacklistLast()
+            stage = ST_FIND
+            handler.postDelayed({ stageFind() }, humanDelay(1200))
+            return
+        }
+        updateNotif("部队未就绪（$reason），${WAIT_POLL_MS / 1000}秒后再试")
+        updateOverlayStatus("部队未就绪(${waitReadyTries}) · 等待中")
+        stage = ST_WAIT
+        handler.postDelayed({ stageFind() }, WAIT_POLL_MS)
     }
 
     private fun blacklistLast() {

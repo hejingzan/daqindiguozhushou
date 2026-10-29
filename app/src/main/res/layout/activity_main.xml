@@ -342,7 +342,7 @@
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="wrap_content"
-                android:text="每次出征后等待(秒)"
+                android:text="出征后至少等待(秒)，之后自动等部队恢复"
                 android:gravity="center_vertical"
                 android:textSize="13sp" />
             <EditText
