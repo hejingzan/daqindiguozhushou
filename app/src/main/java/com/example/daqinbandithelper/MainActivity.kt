@@ -15,6 +15,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.RadioGroup
 import android.widget.TextView
@@ -51,6 +52,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var editBanditName: EditText
     private lateinit var editCenterRatio: EditText
     private lateinit var editNameOffset: EditText
+    private lateinit var checkFullScreen: CheckBox
+    private lateinit var editCenterX: EditText
+    private lateinit var editCenterY: EditText
     private lateinit var editActStart: EditText
     private lateinit var editActEnd: EditText
     private lateinit var editNoBandit: EditText
@@ -174,6 +178,9 @@ class MainActivity : AppCompatActivity() {
         editBanditName = findViewById(R.id.edit_banditname)
         editCenterRatio = findViewById(R.id.edit_center_ratio)
         editNameOffset = findViewById(R.id.edit_name_offset)
+        checkFullScreen = findViewById(R.id.check_fullscreen)
+        editCenterX = findViewById(R.id.edit_center_x)
+        editCenterY = findViewById(R.id.edit_center_y)
         editActStart = findViewById(R.id.edit_act_start)
         editActEnd = findViewById(R.id.edit_act_end)
         editNoBandit = findViewById(R.id.edit_nobandit)
@@ -199,6 +206,9 @@ class MainActivity : AppCompatActivity() {
         editBanditName.setText(prefs.getBanditNameKeywords().joinToString(","))
         editCenterRatio.setText(trimFloat(prefs.getCenterRadiusRatio()))
         editNameOffset.setText(trimFloat(prefs.getNameBodyOffsetRatio()))
+        checkFullScreen.isChecked = prefs.isFullScreenSearch()
+        editCenterX.setText((prefs.getSearchCenterXRatio() * 100).toInt().toString())
+        editCenterY.setText((prefs.getSearchCenterYRatio() * 100).toInt().toString())
         val actStart = prefs.getActivityStartMin()
         val actEnd = prefs.getActivityEndMin()
         if (actStart >= 0) editActStart.setText(fmtMin(actStart))
@@ -420,9 +430,16 @@ class MainActivity : AppCompatActivity() {
             .split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
             .ifEmpty { Prefs.defaultBanditNames }
         prefs.setBanditNameKeywords(names)
-        // 屏幕中心搜索范围（占屏比例，≈游戏内1000里）
+        // 屏幕中心搜索范围（占屏比例，仅在「全屏搜索」关闭时生效）
         val ratio = editCenterRatio.text.toString().toFloatOrNull()?.coerceIn(0.1f, 0.95f) ?: 0.48f
         prefs.setCenterRadiusRatio(ratio)
+        // 全屏搜索开关
+        prefs.setFullScreenSearch(checkFullScreen.isChecked)
+        // 可修改的固定点（屏幕宽/高百分比，对应你拉兵的位置）
+        val cxPct = editCenterX.text.toString().toIntOrNull()?.coerceIn(0, 100) ?: 50
+        val cyPct = editCenterY.text.toString().toIntOrNull()?.coerceIn(0, 100) ?: 50
+        prefs.setSearchCenterXRatio(cxPct / 100f)
+        prefs.setSearchCenterYRatio(cyPct / 100f)
         // 盗匪名字标签 → 实体点击点 下移比例（点名落空时点不中盗匪，调大此值）
         val noff = editNameOffset.text.toString().toFloatOrNull()?.coerceIn(0f, 0.3f) ?: 0.05f
         prefs.setNameBodyOffsetRatio(noff)

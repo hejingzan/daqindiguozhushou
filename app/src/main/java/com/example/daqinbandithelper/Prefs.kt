@@ -191,10 +191,34 @@ class Prefs(context: Context) {
     fun setNameBodyOffsetRatio(v: Float) =
         sp.edit().putFloat("name_body_offset", v.coerceIn(0f, 0.3f)).apply()
 
-    // ---------------- 屏幕中心搜索范围 ----------------
+    // ---------------- 屏幕搜索范围与固定点 ----------------
+
+    /**
+     * 是否全屏搜索：开启时忽略范围限制，扫描整个屏幕上的所有盗匪
+     * （仅按「固定点」挑选最近的去打）。默认开启。
+     */
+    fun isFullScreenSearch(): Boolean = sp.getBoolean("full_screen_search", true)
+    fun setFullScreenSearch(v: Boolean) =
+        sp.edit().putBoolean("full_screen_search", v).apply()
+
+    /**
+     * 固定点 X：屏幕宽度比例（0~1，0.5=屏幕中线）。
+     * 用于「挑选最近盗匪」的参考中心，可在 APP 里修改，把挂机重心对准你拉兵的位置。
+     */
+    fun getSearchCenterXRatio(): Float = sp.getFloat("search_center_x", 0.5f)
+    fun setSearchCenterXRatio(v: Float) =
+        sp.edit().putFloat("search_center_x", v.coerceIn(0f, 1f)).apply()
+
+    /**
+     * 固定点 Y：屏幕高度比例（0~1，0.5=屏幕中线）。
+     */
+    fun getSearchCenterYRatio(): Float = sp.getFloat("search_center_y", 0.5f)
+    fun setSearchCenterYRatio(v: Float) =
+        sp.edit().putFloat("search_center_y", v.coerceIn(0f, 1f)).apply()
 
     /**
      * 屏幕中心搜索半径：占「屏幕较短边」的比例（0.1~0.95）。
+     * 仅在「全屏搜索」关闭时生效，用于限定只打固定点附近一片区域的盗匪。
      * 游戏内「里」是随地图缩放变化的，无法精确换算成像素，
      * 因此用「屏幕中心周围像素半径」来近似「屏幕中心周围约 1000 里」。
      * 默认 0.48 ≈ 覆盖屏幕中心附近大半个可见区域。

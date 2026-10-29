@@ -131,6 +131,15 @@
             android:inputType="text"
             android:textSize="13sp" />
 
+        <CheckBox
+            android:id="@+id/check_fullscreen"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="全屏搜索（扫描整个屏幕，忽略范围限制，默认开）"
+            android:checked="true"
+            android:textSize="13sp"
+            android:layout_marginTop="8dp" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -140,7 +149,49 @@
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="wrap_content"
-                android:text="屏幕中心搜索范围(占屏比例，≈1000里)"
+                android:text="固定点 X (屏幕宽度百分比 0-100，即拉兵位置)"
+                android:gravity="center_vertical"
+                android:textSize="13sp" />
+            <EditText
+                android:id="@+id/edit_center_x"
+                android:layout_width="70dp"
+                android:layout_height="wrap_content"
+                android:hint="50"
+                android:inputType="number"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="固定点 Y (屏幕高度百分比 0-100，即拉兵位置)"
+                android:gravity="center_vertical"
+                android:textSize="13sp" />
+            <EditText
+                android:id="@+id/edit_center_y"
+                android:layout_width="70dp"
+                android:layout_height="wrap_content"
+                android:hint="50"
+                android:inputType="number"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="屏幕中心搜索范围(占屏比例,全屏关闭时生效)"
                 android:gravity="center_vertical"
                 android:textSize="13sp" />
             <EditText

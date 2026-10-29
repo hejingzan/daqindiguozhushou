@@ -721,18 +721,21 @@ class BanditAccessibilityService : AccessibilityService() {
         return best
     }
 
-    /** 搜索中心（屏幕中心 = 用户手动拉兵的位置） */
-    private fun centerX(): Int = if (screenWidth > 0) screenWidth / 2 else 0
-    private fun centerY(): Int = if (screenHeight > 0) screenHeight / 2 else 0
+    /** 搜索中心：可在 APP 里修改的「固定点」（屏幕宽/高比例，默认屏幕中线） */
+    private fun centerX(): Int =
+        if (screenWidth > 0) (screenWidth * prefs.getSearchCenterXRatio()).toInt() else 0
+    private fun centerY(): Int =
+        if (screenHeight > 0) (screenHeight * prefs.getSearchCenterYRatio()).toInt() else 0
 
-    /** 屏幕中心周围搜索半径（像素），对应游戏内约 1000 里（随地图缩放变化） */
+    /** 屏幕中心周围搜索半径（像素），只在「全屏搜索」关闭时生效，对应游戏内约 1000 里 */
     private fun centerRadiusPx(): Int {
         val r = prefs.getCenterRadiusRatio().coerceIn(0.1f, 0.95f)
         return (Math.min(screenWidth, screenHeight) * r).toInt().coerceAtLeast(150)
     }
 
-    /** 仅保留 (cx,cy) 周围 radius 像素内的候选 */
+    /** 仅保留 (cx,cy) 周围 radius 像素内的候选；全屏搜索时直接返回全部 */
     private fun filterWithin(cands: List<BanditCand>, cx: Int, cy: Int, radius: Int): List<BanditCand> {
+        if (prefs.isFullScreenSearch()) return cands
         val r2 = radius.toLong() * radius
         return cands.filter { (it.x - cx).toLong() * (it.x - cx) + (it.y - cy).toLong() * (it.y - cy) <= r2 }
     }
@@ -764,8 +767,6 @@ class BanditAccessibilityService : AccessibilityService() {
             Log.e(TAG, "findBanditsByText traverse err", e)
         }
         val cands = mutableListOf<BanditCand>()
-        val r = centerRadiusPx()
-        val cx = centerX(); val cy = centerY()
         for (n in found) {
             val rect = Rect()
             try { n.getBoundsInScreen(rect) } catch (_: Exception) { continue }
@@ -775,9 +776,7 @@ class BanditAccessibilityService : AccessibilityService() {
             val bx = rect.centerX()
             val off = (rect.height() * 1.5 + screenHeight * prefs.getNameBodyOffsetRatio()).toInt()
             val by = (rect.bottom + off).coerceIn(2, (screenHeight - 2).coerceAtLeast(3))
-            if ((bx - cx).toLong() * (bx - cx) + (by - cy).toLong() * (by - cy) <= r.toLong() * r) {
-                cands.add(BanditCand(bx, by, 9999))
-            }
+            cands.add(BanditCand(bx, by, 9999))
             n.recycle()
         }
         return cands
@@ -799,15 +798,19 @@ class BanditAccessibilityService : AccessibilityService() {
      * 综合找盗匪：优先用文字识别（最稳），识别不到再退回颜色扫描。
      * 返回经「屏幕中心半径」过滤后的候选，以及识别来源（"文字"/"颜色"）用于诊断。
      */
+    /** 当前搜索模式标签（用于悬浮窗诊断） */
+    private fun searchModeLabel(): String =
+        if (prefs.isFullScreenSearch()) "全屏" else "范围"
+
     private fun findBanditCandidatesAll(): Pair<List<BanditCand>, String> {
         val byText = findBanditsByText()
         if (byText.isNotEmpty()) {
-            updateOverlayStatus("文字识别盗匪 ${byText.size} 个")
+            updateOverlayStatus("文字识别盗匪 ${byText.size} 个 · ${searchModeLabel()}")
             return Pair(byText, "文字")
         }
         val byColor = findBanditCandidates()
         if (byColor.isNotEmpty()) {
-            updateOverlayStatus("颜色识别盗匪 ${byColor.size} 个")
+            updateOverlayStatus("颜色识别盗匪 ${byColor.size} 个 · ${searchModeLabel()}")
         }
         return Pair(byColor, "颜色")
     }
@@ -1270,7 +1273,7 @@ class BanditAccessibilityService : AccessibilityService() {
         val cands = filterWithin(candsRaw, centerX(), centerY(), centerRadiusPx())
         val np = pickNearestBandit(cands, centerX(), centerY())
         val p = np?.let { Point(it.x, it.y) }
-        updateOverlayStatus("运行中 · 找盗匪…($src 候选${cands.size})")
+        updateOverlayStatus("运行中 · 找盗匪…($src 候选${cands.size} · ${searchModeLabel()} · 固定点${centerX()},${centerY()})")
         if (p != null && !isBlacklisted(p)) {
             if (!levelAccept(p)) {
                 updateNotif("盗匪等级不符，继续找")
