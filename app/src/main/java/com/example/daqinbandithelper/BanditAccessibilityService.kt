@@ -1045,7 +1045,9 @@ class BanditAccessibilityService : AccessibilityService() {
             }
             if (targets.isEmpty()) return false
             // 取最靠上的可点关闭按钮（通常是弹窗自身的关闭键）
-            val best = targets.maxByOrNull { it.boundsInScreen.top } ?: return false
+            val best = targets.maxByOrNull { n ->
+                val rr = Rect(); n.getBoundsInScreen(rr); rr.top
+            } ?: return false
             val ok = best.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             logOp("dismiss popup (${best.text}) -> $ok")
             ok
