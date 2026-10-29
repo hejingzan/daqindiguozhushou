@@ -22,7 +22,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 构建 Debug APK 并回写日志到提交评论
+      - name: 构建 Debug APK 并回写日志
         continue-on-error: true
         env:
           TOKEN: ${{ github.token }}
@@ -41,23 +41,43 @@ jobs:
               txt = open("build_log.txt", encoding="utf-8", errors="replace").read()
           except Exception as e:
               txt = f"no build_log.txt: {e}"
-          # 截断到 50000 字符，避免超出评论上限
-          if len(txt) > 50000:
-              txt = "...(前段省略)...\n" + txt[-50000:]
-          body = "**BUILD LOG**\n```\n" + txt + "\n```"
+          tail = txt[-40000:]
+          body = "**BUILD LOG TAIL**\n```\n" + tail + "\n```"
+          # 1) 尝试提交评论
+          cmsg = ""
           url = f"https://api.github.com/repos/{repo}/commits/{sha}/comments"
-          req = urllib.request.Request(url, data=json.dumps({"body": body}).encode("utf-8"), headers=hdr, method="POST")
           try:
-              resp = urllib.request.urlopen(req, timeout=30)
-              print("comment posted, status", resp.status)
+              req = urllib.request.Request(url, data=json.dumps({"body": body}).encode("utf-8"), headers=hdr, method="POST")
+              r = urllib.request.urlopen(req, timeout=30)
+              cmsg = f"comment_posted:{r.status}"
           except urllib.error.HTTPError as e:
-              print("post failed", e.code, e.read().decode(errors="replace")[:500])
+              cmsg = f"comment_failed:{e.code}:{e.read().decode(errors='replace')[:300]}"
+          except Exception as e:
+              cmsg = f"comment_exc:{e}"
+          print("COMMENT_RESULT", cmsg)
+          # 2) 尝试 Checks PATCH（补齐必填字段）
+          pmsg = ""
+          try:
+              data = json.load(urllib.request.urlopen(urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/commits/{sha}/check-runs?per_page=5", headers=hdr), timeout=30))
+              cr = data.get("check_runs", [{}])[0]
+              crid = cr.get("id")
+              if crid:
+                  patch = json.dumps({
+                      "name": cr.get("name", "build"),
+                      "head_sha": sha,
+                      "status": "completed",
+                      "conclusion": cr.get("conclusion") or "neutral",
+                      "output": {"title": "build log", "summary": tail}
+                  }).encode("utf-8")
+                  preq = urllib.request.Request(
+                      f"https://api.github.com/repos/{repo}/check-runs/{crid}",
+                      data=patch, headers={**hdr}, method="PATCH")
+                  pr = urllib.request.urlopen(preq, timeout=30)
+                  pmsg = f"check_patched:{pr.status}"
+              else:
+                  pmsg = "no_crid"
+          except Exception as e:
+              pmsg = f"check_exc:{e}"
+          print("CHECK_RESULT", pmsg)
           PY
-
-      - name: 上传 APK 产物
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: daqin-bandit-helper-apk
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: ignore
