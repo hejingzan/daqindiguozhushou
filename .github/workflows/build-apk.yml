@@ -1,12 +1,12 @@
 name: 构建 APK
 
+# 触发方式：
+# 1) push 到 main/master 自动构建；
+# 2) 仓库 Actions 页面手动 "Run workflow"。
 on:
   workflow_dispatch:
   push:
     branches: [ "main", "master" ]
-
-permissions:
-  contents: read
 
 jobs:
   build:
@@ -21,33 +21,16 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 构建 Debug APK
-        run: |
-          chmod +x gradlew
-          set -o pipefail
-          if ./gradlew assembleDebug --no-daemon 2>&1 | tee build_log.txt; then
-            echo "BUILD_OK"
-          else
-            echo "BUILD_FAILED，关键错误行："
-            grep -nE 'e: |error:|FAILURE|What went wrong|FAILED|Exception|Unresolved|not applicable' build_log.txt | head -50 | while IFS= read -r ln; do
-              safe=$(printf '%s' "$ln" | sed 's/%/%25/g; s/\r//g')
-              echo "::error::$safe"
-            done
-            exit 1
-          fi
+      # 仓库未提交 gradlew / gradle-wrapper.jar，故用官方 action 自动下载 Gradle 8.5 并构建
+      - name: 构建 Debug APK（自动下载 Gradle 与依赖）
+        uses: gradle/gradle-build-action@v3
+        with:
+          gradle-version: 8.5
+          arguments: assembleDebug
 
       - name: 上传 APK 产物
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: daqin-bandit-helper-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-
-      - name: 上传构建日志（诊断）
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: build_log.txt
-          if-no-files-found: ignore
