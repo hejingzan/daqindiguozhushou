@@ -238,10 +238,10 @@ class MainActivity : AppCompatActivity() {
         try {
             val f = crashFile()
             if (f.exists()) {
-                val text = f.readText().take(2000)
+                val logText = f.readText().take(2000)
                 findViewById<TextView>(R.id.text_crash).apply {
                     visibility = View.VISIBLE
-                    text = "⚠ 上次运行出错（长按可复制，请发给开发者）：\n$text"
+                    text = "⚠ 上次运行出错（长按可复制，请发给开发者）：\n$logText"
                 }
                 f.delete()
             }
