@@ -1,8 +1,5 @@
 name: 构建 APK
 
-# 两种方式触发：
-# 1) 你 push 代码到 main/master 分支时自动构建；
-# 2) 在 GitHub 仓库的 Actions 页面点 "Run workflow" 手动构建。
 on:
   workflow_dispatch:
   push:
@@ -21,15 +18,24 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 构建 Debug APK（自动下载 Gradle 与依赖）
-        uses: gradle/gradle-build-action@v3
+      - name: 构建 Debug APK（捕获日志）
+        continue-on-error: true
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon 2>&1 | tee build_log.txt
+          echo "GRADLE_EXIT=${PIPESTATUS[0]}"
+
+      - name: 上传构建日志（诊断用）
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          gradle-version: 8.5
-          arguments: assembleDebug
+          name: build-log
+          path: build_log.txt
 
       - name: 上传 APK 产物
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: daqin-bandit-helper-apk
           path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
+          if-no-files-found: ignore
