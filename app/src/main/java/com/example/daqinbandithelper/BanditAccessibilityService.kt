@@ -43,6 +43,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Calendar
@@ -114,6 +115,11 @@ class BanditAccessibilityService : AccessibilityService() {
         private const val STATE_DIFF_MAX = 4.0 // 全分辨率比对的「同一状态」阈值（每通道平均差）
         private const val WAIT_POLL_MS = 6000L // 部队未就绪时，重新试探的间隔
         private const val WAIT_READY_MAX = 8   // 试探上限（约1分钟），超过按失败换目标
+
+        // 保障层：安全 / 稳定性（对应设计文档第七阶段）
+        private const val GUARD_INTERVAL_MS = 3000L        // 守护定时器轮询间隔
+        private const val CIRCUIT_LIMIT = 6                // 连续异常上限，超过即熔断停止
+        private const val STAGE_HARD_TIMEOUT_MS = 60000L   // 任一阶段硬超时（兜底，战斗等待除外）
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -204,9 +210,6 @@ class BanditAccessibilityService : AccessibilityService() {
     private var errorStreak = 0
     private var recoveryPending = false
     private val botLogFile by lazy { File(filesDir, "bot.log") }
-    private const val GUARD_INTERVAL_MS = 3000L          // 守护定时器轮询间隔
-    private const val CIRCUIT_LIMIT = 6                  // 连续异常上限，超过即熔断停止
-    private const val STAGE_HARD_TIMEOUT_MS = 60000L     // 任一阶段硬超时（兜底，战斗等待除外）
 
     // 拖动悬浮窗用
     private var dragStartX = 0f
@@ -996,7 +999,7 @@ class BanditAccessibilityService : AccessibilityService() {
     private fun logOp(msg: String) {
         val ts = SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(Date())
         val line = "$ts [${stageName(stage)}] $msg\n"
-        try { botLogFile.appendText(line) } catch (_: Exception) { }
+        try { botLogFile.appendText(line) } catch (e: Exception) { }
         Log.i(TAG, line.trimEnd())
     }
 
