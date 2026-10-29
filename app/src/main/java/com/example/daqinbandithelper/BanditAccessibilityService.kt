@@ -202,7 +202,7 @@ class BanditAccessibilityService : AccessibilityService() {
                 humanPauseProb = 0.08
             }
         }
-    }    }
+    }
 
     // ---------------- 媒体投影 / 截图 ----------------
 
