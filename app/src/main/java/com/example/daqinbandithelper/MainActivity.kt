@@ -73,6 +73,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 服务发来：录屏授权已失效，需要重新申请 */
+    private val needCaptureReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == BanditAccessibilityService.ACTION_NEED_CAPTURE) {
+                pendingAction = ACTION_START
+                Toast.makeText(
+                    this@MainActivity,
+                    "录屏授权已失效，请重新授权以开始",
+                    Toast.LENGTH_LONG
+                ).show()
+                launchCapture()
+            }
+        }
+    }
+
     private val mediaProj = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -194,6 +209,12 @@ class MainActivity : AppCompatActivity() {
         } else {
             registerReceiver(calibReceiver, filter)
         }
+        val ncFilter = IntentFilter(BanditAccessibilityService.ACTION_NEED_CAPTURE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(needCaptureReceiver, ncFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(needCaptureReceiver, ncFilter)
+        }
         showLastCrashIfAny()
         ensureNotifPermission()
     }
@@ -270,6 +291,9 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         try {
             unregisterReceiver(calibReceiver)
+        } catch (e: Exception) { /* ignore */ }
+        try {
+            unregisterReceiver(needCaptureReceiver)
         } catch (e: Exception) { /* ignore */ }
     }
 

@@ -70,6 +70,7 @@ class BanditAccessibilityService : AccessibilityService() {
         const val ACTION_STOP = "stop"
         const val ACTION_CALIBRATE = "calibrate"
         const val ACTION_CALIB_DONE = "com.example.daqinbandithelper.CALIB_DONE"
+        const val ACTION_NEED_CAPTURE = "need_capture"
 
         private const val NOTIF_ID = 1001
         private const val CHANNEL_ID = "daqin_channel"
@@ -897,11 +898,20 @@ class BanditAccessibilityService : AccessibilityService() {
     // ---------------- 主循环：盗匪 → 讨伐 → 全选 → 确定 → 等战斗 ----------------
 
     /**
-     * 首次运行自动校准：不要求用户手动点 7 步，点「开始」后程序自动完成——
-     * 自动扫描地图找到盗匪 → 截取盗匪模板 → 以屏幕中心为搜索原点 → 标记已校准，
-     * 之后正常挂机循环会自动补采「全选/不选/确定」模板。
-     * 若自动扫描不到盗匪（特殊配色/视角），回退提示用户轻点一下即可继续。
+     * 首次运行自动校准：点「开始」后程序自动完成——自动扫描地图找到盗匪 → 截取盗匪模板
+     * → 标记已校准，之后挂机循环会自动补采「全选/不选/确定」模板。
+     *
+     * 关键修正：旧版只扫描一次，而 MediaProjection 的虚拟屏需要一点时间才出第一帧，
+     * 首次 acquireLatestImage() 常常返回 null → 直接 return → 表现就是「点开始完全不动」。
+     * 现在改成重试多次（让截图帧到位），仍找不到再弹出全屏提示让用户「点一下盗匪」，
+     * 不会 silently 失败。
      */
+    private var autoTries = 0
+    private val AUTO_MAX = 6
+    private var pickMode = false
+    private var pickOverlay: View? = null
+    private var pickParams: WindowManager.LayoutParams? = null
+
     private fun autoCalibrate() {
         if (running || calibrating) return
         running = true
@@ -917,15 +927,39 @@ class BanditAccessibilityService : AccessibilityService() {
         failUntil = 0L
         waitReady = false
         waitReadyTries = 0
+        autoTries = 0
+        updateNotif("自动识别盗匪中…", true)
+        updateOverlayStatus("自动识别中…(第1次)")
+        handler.postDelayed({ autoCalibrateStep() }, 900)
+    }
+
+    /** 自动识别盗匪：多次重试，并给出「截图是否就绪」的诊断 */
+    private fun autoCalibrateStep() {
+        if (!running) return
+        autoTries++
+        // 先探一下截图是否就绪（虚拟屏首帧常延迟）
+        val probe = captureBitmap()
+        probe?.recycle()
+        val shotOk = probe != null
         val p = scanBanditByColor()
-        if (p == null) {
-            running = false
-            prefs.setEnabled(false)
-            toast("自动未识别到盗匪：请在地图上点一下盗匪，再点悬浮窗「校准」")
-            updateNotif("自动识别失败，请点一下盗匪后点「校准」", false)
-            updateOverlayStatus("自动识别失败 · 点盗匪后点「校准」")
+        if (p != null) {
+            finishAutoCalibrate(p)
             return
         }
+        if (autoTries < AUTO_MAX) {
+            val diag = if (shotOk) "没找到盗匪" else "截图未就绪"
+            updateOverlayStatus("自动识别中…(第${autoTries}次·$diag)")
+            handler.postDelayed({ autoCalibrateStep() }, 1300)
+            return
+        }
+        // 自动识别失败：请用户手动点一下盗匪
+        updateNotif("自动没找到盗匪，请点一下地图盗匪", false)
+        updateOverlayStatus("自动未找到 · 请点一下盗匪")
+        enterPickBanditMode()
+    }
+
+    /** 自动识别成功：采盗匪模板并进入挂机循环 */
+    private fun finishAutoCalibrate(p: Point) {
         captureTemplateFile("bandit", p.x, p.y, 55)
         banditTpl = loadTpl("bandit")
         if (!prefs.hasBasePos()) {
@@ -942,6 +976,100 @@ class BanditAccessibilityService : AccessibilityService() {
         handler.postDelayed({ stageFind() }, 700)
     }
 
+    /** 自动识别失败时，弹全屏提示让用户点一下盗匪的位置，从该点采模板继续 */
+    private fun enterPickBanditMode() {
+        pickMode = true
+        val root = LinearLayout(this)
+        root.orientation = LinearLayout.VERTICAL
+        root.setBackgroundColor(Color.argb(140, 0, 0, 0))
+        val tv = TextView(this)
+        tv.setTextColor(Color.WHITE)
+        tv.textSize = 18f
+        tv.setPadding(48, 90, 48, 48)
+        tv.text = "自动没找到盗匪。\n\n" +
+                "请直接点一下地图上的任意一个【盗匪】（红褐色小兵那一队），\n" +
+                "APP 会记住它的样子并继续自动挂机。\n\n" +
+                "（点哪里都行，我们取你点的位置来识别）"
+        root.addView(
+            tv,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        root.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN) {
+                onPickBandit(event.x.toInt(), event.y.toInt())
+                true
+            } else false
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            else
+                WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        try {
+            windowManager?.addView(root, params)
+            pickOverlay = root
+            pickParams = params
+        } catch (e: Exception) {
+            Log.e(TAG, "pick overlay failed", e)
+            // 连拾取浮层都建不了，退回重试自动识别
+            autoTries = 0
+            handler.postDelayed({ autoCalibrateStep() }, 1500)
+        }
+    }
+
+    /** 用户点了一下盗匪：从该点截取模板并进入挂机循环 */
+    private fun onPickBandit(x: Int, y: Int) {
+        pickMode = false
+        removePickOverlay()
+        updateOverlayStatus("已选盗匪 · 识别中…")
+        // 等浮层消失后再截图，保证模板干净（不混入半透明蒙层）
+        handler.postDelayed({
+            if (!running) return@postDelayed
+            val p = Point(x, y)
+            captureTemplateFile("bandit", p.x, p.y, 55)
+            banditTpl = loadTpl("bandit")
+            if (!prefs.hasBasePos()) {
+                prefs.setBaseX(screenWidth / 2)
+                prefs.setBaseY(screenHeight / 2)
+                captureTemplateFile("base", screenWidth / 2, screenHeight / 2, 60)
+                baseTpl = loadTpl("base")
+            }
+            prefs.setCalibrated(true)
+            setOverlayToggle(true)
+            updateNotif("已识别盗匪，开始挂机", true)
+            updateOverlayStatus("已识别✅ · 找盗匪…")
+            stage = ST_FIND
+            handler.postDelayed({ stageFind() }, 700)
+        }, 250)
+    }
+
+    private fun removePickOverlay() {
+        try {
+            pickOverlay?.let { windowManager?.removeView(it) }
+        } catch (e: Exception) { /* ignore */ }
+        pickOverlay = null
+        pickParams = null
+    }
+
+    /** 通知 APP 重新申请录屏授权（授权过期但 APP 以为还有效时） */
+    private fun sendNeedCapture() {
+        val i = Intent(ACTION_NEED_CAPTURE)
+        i.setPackage(packageName)
+        try {
+            sendBroadcast(i)
+        } catch (e: Exception) {
+            Log.e(TAG, "sendNeedCapture failed", e)
+        }
+    }
+
     private fun startLoop() {
         if (calibrating) {
             toast("正在校准中，请先完成校准")
@@ -953,9 +1081,10 @@ class BanditAccessibilityService : AccessibilityService() {
         }
         loadConfig()
         if (!captureReady || imageReader == null) {
-            toast("未授权录屏：请回APP点「授权录屏并启动」")
-            updateNotif("无法运行：未授权录屏，请回APP授权", false)
-            updateOverlayStatus("未授权录屏 · 回APP授权")
+            toast("录屏未就绪：请回APP重新授权")
+            updateNotif("录屏未就绪，请回APP重新授权", false)
+            updateOverlayStatus("录屏未就绪 · 请求授权")
+            sendNeedCapture()
             return
         }
         if (banditTpl == null) {
@@ -988,8 +1117,10 @@ class BanditAccessibilityService : AccessibilityService() {
 
     private fun stopLoop() {
         running = false
+        pickMode = false
         prefs.setEnabled(false)
         handler.removeCallbacksAndMessages(null)
+        removePickOverlay()
         updateNotif("已停止", false)
         setOverlayToggle(false)
         updateOverlayStatus("已停止 · 点「开始」继续")
