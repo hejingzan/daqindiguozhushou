@@ -173,6 +173,25 @@ class Prefs(context: Context) {
     fun getSearchMode(): Int = sp.getInt("search_mode", 0)
     fun setSearchMode(v: Int) = sp.edit().putInt("search_mode", v).apply()
 
+    // ---------------- 盗匪名称文字识别 ----------------
+
+    /** 盗匪名称关键词（无障碍节点文字识别用，逗号分隔多个）。默认含「盗匪喽啰/盗匪精英/盗匪」 */
+    fun getBanditNameKeywords(): Set<String> =
+        sp.getStringSet("bandit_names", defaultBanditNames) ?: defaultBanditNames
+    fun setBanditNameKeywords(v: Set<String>) = sp.edit().putStringSet("bandit_names", v).apply()
+
+    // ---------------- 屏幕中心搜索范围 ----------------
+
+    /**
+     * 屏幕中心搜索半径：占「屏幕较短边」的比例（0.1~0.95）。
+     * 游戏内「里」是随地图缩放变化的，无法精确换算成像素，
+     * 因此用「屏幕中心周围像素半径」来近似「屏幕中心周围约 1000 里」。
+     * 默认 0.48 ≈ 覆盖屏幕中心附近大半个可见区域。
+     */
+    fun getCenterRadiusRatio(): Float = sp.getFloat("center_radius_ratio", 0.48f)
+    fun setCenterRadiusRatio(v: Float) =
+        sp.edit().putFloat("center_radius_ratio", v.coerceIn(0.1f, 0.95f)).apply()
+
     /** 搜索半径（里） */
     fun getSearchRadiusLi(): Int = sp.getInt("search_radius_li", 1000)
     fun setSearchRadiusLi(v: Int) = sp.edit().putInt("search_radius_li", v).apply()
@@ -198,6 +217,10 @@ class Prefs(context: Context) {
     companion object {
         val defaultKeywords: Set<String> = setOf(
             "攻击", "讨伐", "出征", "出发", "击败", "剿灭", "扫荡", "挑战", "进攻"
+        )
+        /** 盗匪名称关键词（无障碍文字识别用）：游戏里盗匪头顶的名字标签 */
+        val defaultBanditNames: Set<String> = setOf(
+            "盗匪喽啰", "盗匪精英", "盗匪"
         )
     }
 }

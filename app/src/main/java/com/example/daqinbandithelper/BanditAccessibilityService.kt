@@ -17,6 +17,7 @@ import android.graphics.Color
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Point
+import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
@@ -42,6 +43,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import java.util.ArrayDeque
 import java.util.Calendar
 import kotlin.math.abs
 import kotlin.random.Random
@@ -122,6 +124,8 @@ class BanditAccessibilityService : AccessibilityService() {
     private var calibBanditX = 0
     private var calibBanditY = 0
     private var keywords: Set<String> = emptySet()
+    private var banditNameKeywords: Set<String> = emptySet()
+    private var calibrated = false
     private var intervalMs: Long = 3000
     private var battleWaitMs: Long = 20000
     private var matchThreshold = 55
@@ -253,6 +257,8 @@ class BanditAccessibilityService : AccessibilityService() {
             prefs.setAppVer(15)
         }
         keywords = prefs.getKeywords()
+        banditNameKeywords = prefs.getBanditNameKeywords()
+        calibrated = prefs.isCalibrated()
         intervalMs = prefs.getIntervalMs()
         battleWaitMs = prefs.getBattleWaitMs()
         matchThreshold = prefs.getMatchThreshold()
@@ -715,6 +721,81 @@ class BanditAccessibilityService : AccessibilityService() {
         return best
     }
 
+    /** 搜索中心（屏幕中心 = 用户手动拉兵的位置） */
+    private fun centerX(): Int = if (screenWidth > 0) screenWidth / 2 else 0
+    private fun centerY(): Int = if (screenHeight > 0) screenHeight / 2 else 0
+
+    /** 屏幕中心周围搜索半径（像素），对应游戏内约 1000 里（随地图缩放变化） */
+    private fun centerRadiusPx(): Int {
+        val r = prefs.getCenterRadiusRatio().coerceIn(0.1f, 0.95f)
+        return (Math.min(screenWidth, screenHeight) * r).toInt().coerceAtLeast(150)
+    }
+
+    /** 仅保留 (cx,cy) 周围 radius 像素内的候选 */
+    private fun filterWithin(cands: List<BanditCand>, cx: Int, cy: Int, radius: Int): List<BanditCand> {
+        val r2 = radius.toLong() * radius
+        return cands.filter { (it.x - cx).toLong() * (it.x - cx) + (it.y - cy).toLong() * (it.y - cy) <= r2 }
+    }
+
+    /**
+     * 通过无障碍节点文字识别盗匪：遍历当前窗口所有节点，
+     * 文字（或 contentDescription）含「盗匪喽啰 / 盗匪精英 / 盗匪」等关键词的，取其屏幕中心坐标。
+     * 这是游戏里盗匪头顶的名字标签，比颜色扫描稳定得多，且天然免模板。
+     */
+    private fun findBanditsByText(): List<BanditCand> {
+        val root = rootInActiveWindow ?: return emptyList()
+        val found = mutableListOf<AccessibilityNodeInfo>()
+        try {
+            val stack = ArrayDeque<AccessibilityNodeInfo>()
+            stack.addLast(root)
+            while (stack.isNotEmpty()) {
+                val node = stack.removeFirst()
+                val txt = node.text?.toString() ?: ""
+                val desc = node.contentDescription?.toString() ?: ""
+                val s = "$txt $desc"
+                if (banditNameKeywords.any { kw -> s.contains(kw) }) {
+                    found.add(node)
+                }
+                for (i in 0 until node.childCount) {
+                    node.getChild(i)?.let { stack.addLast(it) }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "findBanditsByText traverse err", e)
+        }
+        val cands = mutableListOf<BanditCand>()
+        val r = centerRadiusPx()
+        val cx = centerX(); val cy = centerY()
+        for (n in found) {
+            val rect = Rect()
+            try { n.getBoundsInScreen(rect) } catch (_: Exception) { continue }
+            if (rect.isEmpty) continue
+            val bx = rect.centerX(); val by = rect.centerY()
+            if ((bx - cx).toLong() * (bx - cx) + (by - cy).toLong() * (by - cy) <= r.toLong() * r) {
+                cands.add(BanditCand(bx, by, 9999))
+            }
+            n.recycle()
+        }
+        return cands
+    }
+
+    /**
+     * 综合找盗匪：优先用文字识别（最稳），识别不到再退回颜色扫描。
+     * 返回经「屏幕中心半径」过滤后的候选，以及识别来源（"文字"/"颜色"）用于诊断。
+     */
+    private fun findBanditCandidatesAll(): Pair<List<BanditCand>, String> {
+        val byText = findBanditsByText()
+        if (byText.isNotEmpty()) {
+            updateOverlayStatus("文字识别盗匪 ${byText.size} 个")
+            return Pair(byText, "文字")
+        }
+        val byColor = findBanditCandidates()
+        if (byColor.isNotEmpty()) {
+            updateOverlayStatus("颜色识别盗匪 ${byColor.size} 个")
+        }
+        return Pair(byColor, "颜色")
+    }
+
     /** 兼容旧调用：返回屏幕上离中心最近的盗匪点（自动校准时也能用） */
     private fun scanBanditByColor(): Point? {
         val cands = findBanditCandidates()
@@ -872,6 +953,9 @@ class BanditAccessibilityService : AccessibilityService() {
         return (base + jitter).coerceAtLeast(400)
     }
 
+    /** 步骤之间的拟人化间隔：1~2 秒不等（用户要求每步之间停顿） */
+    private fun stepDelay(): Long = Random.nextLong(1000, 2000)
+
     /** 精确拖动地图（手指位移 fx,fy）。慢速拖动，减少游戏地图的惯性滑动误差 */
     private fun dragBy(fx: Int, fy: Int) {
         if (screenWidth == 0 || screenHeight == 0) return
@@ -941,6 +1025,12 @@ class BanditAccessibilityService : AccessibilityService() {
         val probe = captureBitmap()
         probe?.recycle()
         val shotOk = probe != null
+        // 优先用无障碍文字识别盗匪（最稳，免模板）
+        val txt = findBanditsByText()
+        if (txt.isNotEmpty()) {
+            finishAutoCalibrate(Point(txt[0].x, txt[0].y))
+            return
+        }
         val p = scanBanditByColor()
         if (p != null) {
             finishAutoCalibrate(p)
@@ -969,6 +1059,7 @@ class BanditAccessibilityService : AccessibilityService() {
             baseTpl = loadTpl("base")
         }
         prefs.setCalibrated(true)
+        calibrated = true
         updateNotif("自动识别完成，开始挂机", true)
         setOverlayToggle(true)
         updateOverlayStatus("自动识别✅ · 找盗匪…")
@@ -1043,6 +1134,7 @@ class BanditAccessibilityService : AccessibilityService() {
                 baseTpl = loadTpl("base")
             }
             prefs.setCalibrated(true)
+            calibrated = true
             setOverlayToggle(true)
             updateNotif("已识别盗匪，开始挂机", true)
             updateOverlayStatus("已识别✅ · 找盗匪…")
@@ -1087,9 +1179,9 @@ class BanditAccessibilityService : AccessibilityService() {
             sendNeedCapture()
             return
         }
-        if (banditTpl == null) {
-            // 还没识别过盗匪 → 首次自动校准（自动找盗匪 + 自动采按键模板）
-            toast("首次运行：自动识别盗匪与按键中…")
+        if (!calibrated) {
+            // 首次运行：自动识别盗匪（文字/颜色/手动点选），之后循环复用
+            toast("首次运行：自动识别盗匪中…")
             updateOverlayStatus("自动识别中…")
             autoCalibrate()
             return
@@ -1158,15 +1250,11 @@ class BanditAccessibilityService : AccessibilityService() {
             handler.postDelayed({ stageFind() }, Random.nextLong(1500, 4000))
             return
         }
-        val cands = if (banditTpl != null) {
-            val m = matchTemplate(banditTpl)
-            if (m != null) listOf(BanditCand(m.x, m.y, 9999)) else emptyList()
-        } else {
-            findBanditCandidates()
-        }
-        val np = pickNearestBandit(cands, screenWidth / 2, screenHeight / 2)
+        val (candsRaw, src) = findBanditCandidatesAll()
+        val cands = filterWithin(candsRaw, centerX(), centerY(), centerRadiusPx())
+        val np = pickNearestBandit(cands, centerX(), centerY())
         val p = np?.let { Point(it.x, it.y) }
-        updateOverlayStatus("运行中 · 找盗匪…(候选${cands.size})")
+        updateOverlayStatus("运行中 · 找盗匪…($src 候选${cands.size})")
         if (p != null && !isBlacklisted(p)) {
             if (!levelAccept(p)) {
                 updateNotif("盗匪等级不符，继续找")
@@ -1177,14 +1265,18 @@ class BanditAccessibilityService : AccessibilityService() {
             missCount = 0
             noBanditStreak = 0
             lastBandit = p
-            updateNotif("已点击盗匪，等菜单")
+            updateNotif("已选中盗匪，等菜单")
             updateOverlayStatus("已点盗匪 · 等菜单")
-            dispatchTap(p.x, p.y) {
-                stage = ST_ATTACK
-                stageTry = 0
-                stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
-                handler.postDelayed({ stageAttack() }, 600)
-            }
+            // 选中盗匪前先停 1~2 秒（拟人化 + 等 UI 反应）
+            handler.postDelayed({
+                if (!running) return@postDelayed
+                dispatchTap(p.x, p.y) {
+                    stage = ST_ATTACK
+                    stageTry = 0
+                    stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
+                    handler.postDelayed({ stageAttack() }, stepDelay())
+                }
+            }, stepDelay())
             return
         }
         missCount++
@@ -1371,7 +1463,7 @@ class BanditAccessibilityService : AccessibilityService() {
         selectTries = 0
         manualIdx = 0
         stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
-        handler.postDelayed({ stageSelect() }, 800)
+        handler.postDelayed({ stageSelect() }, stepDelay())
     }
 
     // —— 阶段 3：点「全选」 ——
@@ -1508,7 +1600,7 @@ class BanditAccessibilityService : AccessibilityService() {
         stage = ST_CONFIRM
         stageTry = 0
         stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
-        handler.postDelayed({ stageConfirm() }, 500)
+        handler.postDelayed({ stageConfirm() }, stepDelay())
     }
 
     // —— 阶段 4：点「确定」出征 ——

@@ -48,6 +48,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var radioMode: RadioGroup
     private lateinit var editRadius: EditText
     private lateinit var editLiPixel: EditText
+    private lateinit var editBanditName: EditText
+    private lateinit var editCenterRatio: EditText
     private lateinit var editActStart: EditText
     private lateinit var editActEnd: EditText
     private lateinit var editNoBandit: EditText
@@ -168,6 +170,8 @@ class MainActivity : AppCompatActivity() {
         radioMode = findViewById(R.id.radio_mode)
         editRadius = findViewById(R.id.edit_radius)
         editLiPixel = findViewById(R.id.edit_lipixel)
+        editBanditName = findViewById(R.id.edit_banditname)
+        editCenterRatio = findViewById(R.id.edit_center_ratio)
         editActStart = findViewById(R.id.edit_act_start)
         editActEnd = findViewById(R.id.edit_act_end)
         editNoBandit = findViewById(R.id.edit_nobandit)
@@ -190,6 +194,8 @@ class MainActivity : AppCompatActivity() {
         editRadius.setText(prefs.getSearchRadiusLi().toString())
         editLiPixel.setText(trimFloat(prefs.getLiPixel()))
         editNoBandit.setText(prefs.getNoBanditWaitSec().toString())
+        editBanditName.setText(prefs.getBanditNameKeywords().joinToString(","))
+        editCenterRatio.setText(trimFloat(prefs.getCenterRadiusRatio()))
         val actStart = prefs.getActivityStartMin()
         val actEnd = prefs.getActivityEndMin()
         if (actStart >= 0) editActStart.setText(fmtMin(actStart))
@@ -405,6 +411,15 @@ class MainActivity : AppCompatActivity() {
         prefs.setSearchRadiusLi(radius)
         val lp = editLiPixel.text.toString().toFloatOrNull()?.coerceIn(0.2f, 50f) ?: 3f
         prefs.setLiPixel(lp)
+
+        // 盗匪名称关键词（无障碍文字识别用）
+        val names = editBanditName.text.toString()
+            .split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+            .ifEmpty { Prefs.defaultBanditNames }
+        prefs.setBanditNameKeywords(names)
+        // 屏幕中心搜索范围（占屏比例，≈游戏内1000里）
+        val ratio = editCenterRatio.text.toString().toFloatOrNull()?.coerceIn(0.1f, 0.95f) ?: 0.48f
+        prefs.setCenterRadiusRatio(ratio)
 
         // 等级筛选
         val lv = if (radioLevel.checkedRadioButtonId == R.id.rb_level_only) 1 else 0
