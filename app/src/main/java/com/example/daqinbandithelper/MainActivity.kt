@@ -21,6 +21,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import java.io.File
 
 /**
  * 主界面只做三件事：
@@ -124,6 +125,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashHandler()
+        try {
+            initUi()
+        } catch (e: Throwable) {
+            saveCrashLog(e)
+            showFatal(e)
+        }
+    }
+
+    private fun initUi() {
         setContentView(R.layout.activity_main)
         prefs = Prefs(this)
 
@@ -183,14 +194,68 @@ class MainActivity : AppCompatActivity() {
         } else {
             registerReceiver(calibReceiver, filter)
         }
+        showLastCrashIfAny()
         ensureNotifPermission()
     }
 
     override fun onResume() {
         super.onResume()
+        if (!::textStatus.isInitialized) return
         refreshStatus()
         refreshTroopUi()
         refreshBaseUi()
+    }
+
+    // ---------------- 崩溃捕获（不再直接闪退，错误会保存并可查看） ----------------
+
+    private fun crashFile() = File(filesDir, "crash.log")
+
+    private fun installCrashHandler() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try { saveCrashLog(e) } catch (_: Exception) { }
+            prev?.uncaughtException(t, e)
+        }
+    }
+
+    private fun saveCrashLog(e: Throwable) {
+        try {
+            val time = java.text.SimpleDateFormat(
+                "MM-dd HH:mm:ss", java.util.Locale.CHINA
+            ).format(java.util.Date())
+            val log = buildString {
+                append("时间：").append(time)
+                append("\n错误类型：").append(e.javaClass.name)
+                append("\n错误信息：").append(e.message)
+                append("\n\n堆栈：\n")
+                append(android.util.Log.getStackTraceString(e))
+            }
+            crashFile().writeText(log)
+        } catch (_: Exception) { }
+    }
+
+    private fun showLastCrashIfAny() {
+        try {
+            val f = crashFile()
+            if (f.exists()) {
+                val text = f.readText().take(2000)
+                findViewById<TextView>(R.id.text_crash).apply {
+                    visibility = View.VISIBLE
+                    text = "⚠ 上次运行出错（长按可复制，请发给开发者）：\n$text"
+                }
+                f.delete()
+            }
+        } catch (_: Exception) { }
+    }
+
+    private fun showFatal(e: Throwable) {
+        try {
+            val tv = TextView(this)
+            tv.text = "启动出错：${e.javaClass.simpleName}\n${e.message}\n\n" +
+                "错误已保存，请重新打开本应用查看红字内容并截图发给开发者。"
+            tv.setPadding(48, 80, 48, 48)
+            setContentView(tv)
+        } catch (_: Exception) { }
     }
 
     private fun refreshBaseUi() {
