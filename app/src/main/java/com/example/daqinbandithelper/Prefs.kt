@@ -135,6 +135,12 @@ class Prefs(context: Context) {
     fun getNoBanditWaitSec(): Int = sp.getInt("nobandit_wait", 30)
     fun setNoBanditWaitSec(v: Int) = sp.edit().putInt("nobandit_wait", v).apply()
 
+    // ---------------- 应用版本（用于一次性迁移） ----------------
+
+    /** 已写入配置的应用版本号；小于当前版本时做一次迁移 */
+    fun getAppVer(): Int = sp.getInt("app_ver", 0)
+    fun setAppVer(v: Int) = sp.edit().putInt("app_ver", v).apply()
+
     // ---------------- 固定位置（村庄等）为中心搜索 ----------------
 
     /** 基准位置（村庄等固定位置）的屏幕坐标，-1 表示未设置 */
@@ -163,8 +169,8 @@ class Prefs(context: Context) {
 
     // ---------------- 搜索方式 ----------------
 
-    /** 0 = 全图随机找；1 = 以固定位置为中心在范围内扫描 */
-    fun getSearchMode(): Int = sp.getInt("search_mode", 1)
+    /** 0 = 屏幕内找最近盗匪（默认）；1 = 以固定位置为中心在范围内扫描（拖动地图） */
+    fun getSearchMode(): Int = sp.getInt("search_mode", 0)
     fun setSearchMode(v: Int) = sp.edit().putInt("search_mode", v).apply()
 
     /** 搜索半径（里） */

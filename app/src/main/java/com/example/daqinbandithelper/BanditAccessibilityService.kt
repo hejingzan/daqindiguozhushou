@@ -246,6 +246,11 @@ class BanditAccessibilityService : AccessibilityService() {
     }
 
     private fun loadConfig() {
+        // v15 迁移：默认关闭「拖动地图周边搜索」，改为「屏幕内找最近盗匪」
+        if (prefs.getAppVer() < 15) {
+            prefs.setSearchMode(0)
+            prefs.setAppVer(15)
+        }
         keywords = prefs.getKeywords()
         intervalMs = prefs.getIntervalMs()
         battleWaitMs = prefs.getBattleWaitMs()
@@ -631,21 +636,23 @@ class BanditAccessibilityService : AccessibilityService() {
         }
     }
 
+    private data class BanditCand(val x: Int, val y: Int, val score: Int)
+
     /**
-     * 自动找盗匪（无模板时也能用）：在地图主区域扫描「红褐色密集小团」。
-     * 盗匪图标是红褐色小兵，与地图底色（绿/蓝）差异明显，用格子密度法取最红的局部。
-     * 自动校准首次调用；之后 stageFind 也用它兜底。
+     * 自动找盗匪（无模板也能用）：在地图主区域扫描「红褐色密集小团」，
+     * 把所有局部密集点都当成候选盗匪，再交给 pickNearestBandit 选出离部队最近的那个。
+     * 这样符合「搜索最近盗匪」的要求，而不是只抓最红的一坨（可能很远）。
      */
-    private fun scanBanditByColor(): Point? {
+    private fun findBanditCandidates(): List<BanditCand> {
         overlayView?.visibility = View.GONE
-        val screen = captureBitmap() ?: return null
+        val screen = captureBitmap() ?: return emptyList()
+        val cands = mutableListOf<BanditCand>()
         try {
-            // 地图主区域：排除顶栏(~11%)、底栏 UI(~18%) 与边缘
             val x0 = (screen.width * 0.04).toInt()
             val x1 = (screen.width * 0.96).toInt()
-            val y0 = (screen.height * 0.11).toInt()
+            val y0 = (screen.height * 0.10).toInt()
             val y1 = (screen.height * 0.82).toInt()
-            val cell = 18
+            val cell = 16
             val cols = ((x1 - x0) / cell).coerceAtLeast(1)
             val rows = ((y1 - y0) / cell).coerceAtLeast(1)
             val grid = Array(rows) { IntArray(cols) }
@@ -657,27 +664,61 @@ class BanditAccessibilityService : AccessibilityService() {
                     val ci = ((x - x0) / cell).coerceIn(0, cols - 1)
                     val c = screen.getPixel(x, y)
                     val r = Color.red(c); val g = Color.green(c); val b = Color.blue(c)
-                    // 红褐色盗匪：红明显强于蓝、且红略强于绿（排除纯橙按钮与肤色）
-                    if (r > 135 && (r - b) > 55 && (r - g) > 10) grid[ri][ci]++
+                    // 红褐色盗匪：红强于蓝、红略强于绿（排除纯橙按钮与肤色）
+                    if (r > 130 && (r - b) > 50 && (r - g) > 8) grid[ri][ci]++
                     x += 3
                 }
                 y += 3
             }
-            var bestRi = -1; var bestCi = -1; var bestN = 0
+            // 取局部最大值作为候选（同一盗匪团可能被切成相邻几格，下面再合并）
+            val raw = mutableListOf<BanditCand>()
             for (i in 0 until rows) {
                 for (j in 0 until cols) {
-                    if (grid[i][j] > bestN) { bestN = grid[i][j]; bestRi = i; bestCi = j }
+                    val s = grid[i][j]
+                    if (s < 8) continue
+                    var local = true
+                    for (di in -1..1) {
+                        for (dj in -1..1) {
+                            val ni = i + di; val nj = j + dj
+                            if (ni in 0 until rows && nj in 0 until cols && grid[ni][nj] > s) local = false
+                        }
+                    }
+                    if (local) raw.add(BanditCand(x0 + j * cell + cell / 2, y0 + i * cell + cell / 2, s))
                 }
             }
-            if (bestN < 12) return null
-            return Point(x0 + bestCi * cell + cell / 2, y0 + bestRi * cell + cell / 2)
+            // 合并距离很近的候选，避免同一盗匪出多个点
+            val merged = mutableListOf<BanditCand>()
+            for (c in raw.sortedByDescending { it.score }) {
+                if (merged.any { Math.abs(it.x - c.x) < cell * 2 && Math.abs(it.y - c.y) < cell * 2 }) continue
+                merged.add(c)
+            }
+            cands.addAll(merged)
         } catch (e: Exception) {
-            Log.e(TAG, "scanBanditByColor error", e)
-            return null
+            Log.e(TAG, "findBanditCandidates err", e)
         } finally {
             overlayView?.visibility = View.VISIBLE
             screen.recycle()
         }
+        return cands
+    }
+
+    /** 从候选里挑离参考点 (refX,refY) 最近的盗匪（参考点默认屏幕中心=部队位置） */
+    private fun pickNearestBandit(cands: List<BanditCand>, refX: Int, refY: Int): BanditCand? {
+        if (cands.isEmpty()) return null
+        var best: BanditCand? = null
+        var bestD = Int.MAX_VALUE
+        for (c in cands) {
+            val d = (c.x - refX) * (c.x - refX) + (c.y - refY) * (c.y - refY)
+            if (d < bestD) { bestD = d; best = c }
+        }
+        return best
+    }
+
+    /** 兼容旧调用：返回屏幕上离中心最近的盗匪点（自动校准时也能用） */
+    private fun scanBanditByColor(): Point? {
+        val cands = findBanditCandidates()
+        val best = pickNearestBandit(cands, screenWidth / 2, screenHeight / 2)
+        return best?.let { Point(it.x, it.y) }
     }
 
     /**
@@ -986,8 +1027,15 @@ class BanditAccessibilityService : AccessibilityService() {
             handler.postDelayed({ stageFind() }, Random.nextLong(1500, 4000))
             return
         }
-        updateOverlayStatus("运行中 · 找盗匪…")
-        val p = if (banditTpl != null) matchTemplate(banditTpl) else scanBanditByColor()
+        val cands = if (banditTpl != null) {
+            val m = matchTemplate(banditTpl)
+            if (m != null) listOf(BanditCand(m.x, m.y, 9999)) else emptyList()
+        } else {
+            findBanditCandidates()
+        }
+        val np = pickNearestBandit(cands, screenWidth / 2, screenHeight / 2)
+        val p = np?.let { Point(it.x, it.y) }
+        updateOverlayStatus("运行中 · 找盗匪…(候选${cands.size})")
         if (p != null && !isBlacklisted(p)) {
             if (!levelAccept(p)) {
                 updateNotif("盗匪等级不符，继续找")
@@ -1050,6 +1098,64 @@ class BanditAccessibilityService : AccessibilityService() {
         )
     }
 
+    private data class BtnCand(val x: Int, val y: Int, val score: Int)
+
+    /**
+     * 识别盗匪点开后弹出的「放射菜单」按钮：在盗匪周围一圈环形区域里找
+     * 高饱和、明亮的紧凑色块（菜单按钮通常是鲜艳的小图标，背景是暗色圆盘，不会命中）。
+     * 返回按显著程度排序的候选点；stageAttack 会逐个尝试，并用「全选面板是否出现」来校验。
+     */
+    private fun detectMenuButtons(bandit: Point): List<BtnCand> {
+        overlayView?.visibility = View.GONE
+        val screen = captureBitmap() ?: return emptyList()
+        val list = mutableListOf<BtnCand>()
+        try {
+            val k = if (screenWidth > 0) screenWidth / REF_W else 1.0
+            val rMin = (RADIAL_R * 0.45 * k).toInt().coerceAtLeast(28)
+            val rMax = (RADIAL_R * 2.0 * k).toInt().coerceAtLeast(rMin + 20)
+            val cx = bandit.x; val cy = bandit.y
+            val pts = mutableListOf<Point>()
+            var y = cy - rMax
+            while (y <= cy + rMax) {
+                var x = cx - rMax
+                while (x <= cx + rMax) {
+                    val dxp = x - cx; val dyp = y - cy
+                    val dist = Math.sqrt((dxp * dxp + dyp * dyp).toDouble())
+                    if (dist >= rMin && dist <= rMax) {
+                        val c = screen.getPixel(x, y)
+                        val r = Color.red(c); val g = Color.green(c); val b = Color.blue(c)
+                        val maxc = Math.max(r, Math.max(g, b))
+                        val minc = Math.min(r, Math.min(g, b))
+                        val vivid = maxc - minc
+                        // 鲜艳的按钮图标：亮度够高且饱和度够高
+                        if (maxc > 150 && vivid > 70) pts.add(Point(x, y))
+                    }
+                    x += 4
+                }
+                y += 4
+            }
+            // 把零散命中聚成团块
+            val used = BooleanArray(pts.size)
+            for (i in pts.indices) {
+                if (used[i]) continue
+                var sx = 0; var sy = 0; var n = 0
+                for (j in pts.indices) {
+                    if (used[j]) continue
+                    if (Math.abs(pts[i].x - pts[j].x) <= 14 && Math.abs(pts[i].y - pts[j].y) <= 14) {
+                        sx += pts[j].x; sy += pts[j].y; n++; used[j] = true
+                    }
+                }
+                if (n >= 3) list.add(BtnCand(sx / n, sy / n, n))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "detectMenuButtons err", e)
+        } finally {
+            overlayView?.visibility = View.VISIBLE
+            screen.recycle()
+        }
+        return list.sortedByDescending { it.score }
+    }
+
     private fun stageAttack() {
         if (!running) return
         val bandit = lastBandit
@@ -1059,40 +1165,70 @@ class BanditAccessibilityService : AccessibilityService() {
             return
         }
         val wantBattle = prefs.getAttackMode() == 1
-        val useBattle = wantBattle && battleTpl != null
-        val tpl = if (useBattle) battleTpl else attackTpl
         val label = if (wantBattle) "战斗" else "讨伐"
         val exp = radialPos(bandit, if (wantBattle) ANG_BATTLE else ANG_ATTACK)
-        // 自动校准战斗模板（首次用几何位置截一张，避免强制手动校准）
-        if (wantBattle && battleTpl == null) {
-            captureTemplateFile("battle", exp.x, exp.y, 34)
-            battleTpl = loadTpl("battle")
-        }
 
-        // 1) 先按几何推算位置附近找模板（最准）
-        val near = if (tpl != null) matchNear(tpl, exp.x, exp.y, 70) else null
-        if (near != null) {
-            dispatchTap(near.x, near.y) { afterAttack(label) }
-            return
-        }
-        // 2) 再全屏找一次
-        val any = if (tpl != null) matchTemplate(tpl) else null
-        if (any != null) {
-            dispatchTap(any.x, any.y) { afterAttack(label) }
-            return
-        }
-        // 3) 兜底：按几何位置直接点（试探模式下不乱点，部队可能没回来）
-        if (stageTry >= 3) {
-            if (waitReady) {
-                // 点一下盗匪本身，收起可能挂着的放射菜单，再回轮询
-                dispatchTap(bandit.x, bandit.y) { backToWaiting("菜单未出现") }
+        // 1) 有模板就按几何位置附近精确匹配（最快最准）
+        if (attackTpl != null) {
+            val near = matchNear(attackTpl, exp.x, exp.y, 110)
+            if (near != null) {
+                updateOverlayStatus("命中菜单按钮模板")
+                dispatchTap(near.x, near.y) { afterAttack(label) }
                 return
             }
+        }
+        // 2) 没有模板：环形扫描找出菜单按钮，逐个点并用面板出现来校验
+        val btns = detectMenuButtons(bandit)
+        updateOverlayStatus("菜单按钮候选 ${btns.size} 个")
+        if (btns.isNotEmpty()) {
+            attemptAttackButton(btns, 0, bandit, label)
+            return
+        }
+        // 3) 兜底：直接点几何推算位置（试探，不拉黑）
+        if (stageTry >= 2) {
             dispatchTap(exp.x, exp.y) { afterAttack(label) }
             return
         }
         stageTry++
-        handler.postDelayed({ stageAttack() }, 450)
+        handler.postDelayed({ stageAttack() }, 500)
+    }
+
+    /**
+     * 依次尝试菜单按钮候选；点完看「全选」面板是否弹出，弹出=点对了。
+     * 这样即使不知道按钮确切颜色/位置，也能靠校验自动锁定正确按键。
+     */
+    private fun attemptAttackButton(btns: List<BtnCand>, idx: Int, bandit: Point, label: String) {
+        if (!running) return
+        if (idx >= btns.size) {
+            // 所有候选都试过仍没弹出面板：先收起菜单，再重试或几何兜底
+            if (stageTry >= 2) {
+                dispatchTap(bandit.x, bandit.y) { backToWaiting("菜单按钮未点开") }
+                return
+            }
+            dispatchTap(bandit.x, bandit.y) {
+                stageTry++
+                handler.postDelayed({ stageAttack() }, 500)
+            }
+            return
+        }
+        val b = btns[idx]
+        updateOverlayStatus("点菜单按钮 #${idx + 1}/${btns.size}")
+        dispatchTap(b.x, b.y) {
+            handler.postDelayed({
+                val blue = findBlueButton()
+                if (blue != null) {
+                    // 面板弹出了，说明点到了正确的菜单按钮，顺手采下模板下次直接用
+                    if (attackTpl == null) {
+                        captureTemplateFile("attack", b.x, b.y, 34)
+                        attackTpl = loadTpl("attack")
+                    }
+                    afterAttack(label)
+                } else {
+                    // 没弹出面板，换下一个候选再试
+                    attemptAttackButton(btns, idx + 1, bandit, label)
+                }
+            }, 900)
+        }
     }
 
     private fun afterAttack(label: String) {
