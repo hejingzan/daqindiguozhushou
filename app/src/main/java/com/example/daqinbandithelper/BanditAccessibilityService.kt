@@ -13,7 +13,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Point
@@ -34,6 +36,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
+import android.view.Surface
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -120,6 +123,7 @@ class BanditAccessibilityService : AccessibilityService() {
         private const val GUARD_INTERVAL_MS = 3000L        // 守护定时器轮询间隔
         private const val CIRCUIT_LIMIT = 6                // 连续异常上限，超过即熔断停止
         private const val STAGE_HARD_TIMEOUT_MS = 60000L   // 任一阶段硬超时（兜底，战斗等待除外）
+        private const val MARKER_SIZE = 120                // 盗匪检测标记的尺寸（像素）
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -180,6 +184,11 @@ class BanditAccessibilityService : AccessibilityService() {
     private var calibBtn: Button? = null
     private var calibSkip: Button? = null
     private var missCount = 0
+
+    // 盗匪检测标记（屏幕上的绿圈十字，便于直观看清锁定位置；不拦截触摸）
+    private var markerView: MarkerView? = null
+    private var markerParams: WindowManager.LayoutParams? = null
+    private var markerHasTarget = false
 
     // 阶段机
     private var stage = ST_FIND
@@ -243,6 +252,7 @@ class BanditAccessibilityService : AccessibilityService() {
             prefs.setCaptureReady(false)
         }
         showOverlay()
+        initMarkerView()
         updateOverlayStatus("未授权录屏 · 回APP授权")
         updateNotif("助手已就绪：请在APP里点「授权录屏」", false)
     }
@@ -367,9 +377,21 @@ class BanditAccessibilityService : AccessibilityService() {
             metrics.heightPixels = dm.heightPixels
             metrics.densityDpi = dm.densityDpi
         }
-        screenWidth = metrics.widthPixels
-        screenHeight = metrics.heightPixels
+        // 横屏适配：录屏缓冲必须与「真实显示方向」一致，否则截图坐标和 dispatchGesture
+        // 的屏幕坐标对不上（典型现象就是「总是点左下角」）。
+        // 若当前是横屏（旋转 90/270）却取到 宽<高，则交换，保证 宽>高。
+        var capW = metrics.widthPixels
+        var capH = metrics.heightPixels
+        val rot = display?.rotation ?: Surface.ROTATION_0
+        val landscape = (rot == Surface.ROTATION_90 || rot == Surface.ROTATION_270)
+        if (landscape && capW < capH) {
+            val t = capW; capW = capH; capH = t
+        }
+        screenWidth = capW
+        screenHeight = capH
         screenDensity = metrics.densityDpi
+
+        Log.i(TAG, "capture sized ${screenWidth}x${screenHeight} rotation=$rot landscape=$landscape density=$screenDensity")
 
         try {
             imageReader = ImageReader.newInstance(
@@ -414,19 +436,28 @@ class BanditAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             null
         } ?: return null
+        // 以截图真实尺寸为准校正屏幕坐标，保证「检测坐标」与「点击坐标」始终同一空间。
+        // （横屏时系统给的 metrics 偶尔是竖屏尺寸，会导致两者偏差 → 点错位置）
+        val iw = image.width
+        val ih = image.height
+        if (iw <= 0 || ih <= 0) { image.close(); return null }
         val planes = image.planes
         val buffer = planes[0].buffer
         val pixelStride = planes[0].pixelStride
         val rowStride = planes[0].rowStride
-        val rowPadding = rowStride - pixelStride * screenWidth
-        val w = screenWidth + rowPadding / pixelStride
-        val bitmap = Bitmap.createBitmap(w, screenHeight, Bitmap.Config.ARGB_8888)
-        bitmap.copyPixelsFromBuffer(buffer)
+        val rowPadding = rowStride - pixelStride * iw
+        val w = iw + rowPadding / pixelStride
+        val full = Bitmap.createBitmap(w, ih, Bitmap.Config.ARGB_8888)
+        full.copyPixelsFromBuffer(buffer)
         image.close()
+        if (iw != screenWidth || ih != screenHeight) {
+            screenWidth = iw
+            screenHeight = ih
+        }
         return try {
-            Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
+            Bitmap.createBitmap(full, 0, 0, iw, ih)
         } finally {
-            bitmap.recycle()
+            full.recycle()
         }
     }
 
@@ -674,8 +705,10 @@ class BanditAccessibilityService : AccessibilityService() {
         try {
             val x0 = (screen.width * 0.04).toInt()
             val x1 = (screen.width * 0.96).toInt()
-            val y0 = (screen.height * 0.10).toInt()
-            val y1 = (screen.height * 0.82).toInt()
+            val y0 = (screen.height * 0.12).toInt()
+            // 排除底部约 16% 的操作栏 / 状态栏区域：那里常有常驻的红褐色 UI，
+            // 会被误当成盗匪，导致「总是点左下角」之类的固定误点。
+            val y1 = (screen.height * 0.84).toInt()
             val cell = 16
             val cols = ((x1 - x0) / cell).coerceAtLeast(1)
             val rows = ((y1 - y0) / cell).coerceAtLeast(1)
@@ -688,8 +721,9 @@ class BanditAccessibilityService : AccessibilityService() {
                     val ci = ((x - x0) / cell).coerceIn(0, cols - 1)
                     val c = screen.getPixel(x, y)
                     val r = Color.red(c); val g = Color.green(c); val b = Color.blue(c)
-                    // 红褐色盗匪：红强于蓝、红略强于绿（排除纯橙按钮与肤色）
-                    if (r > 130 && (r - b) > 50 && (r - g) > 8) grid[ri][ci]++
+                    // 红褐色盗匪标记：红明显强于蓝、红略强于绿，且整体足够亮（排除暗红砖块/地形）。
+                    // 比旧版更严格，减少地图红褐色背景造成的误检。
+                    if (r > 140 && (r - b) > 55 && (r - g) > 12 && r > g + 10) grid[ri][ci]++
                     x += 3
                 }
                 y += 3
@@ -699,7 +733,7 @@ class BanditAccessibilityService : AccessibilityService() {
             for (i in 0 until rows) {
                 for (j in 0 until cols) {
                     val s = grid[i][j]
-                    if (s < 8) continue
+                    if (s < 10) continue
                     var local = true
                     for (di in -1..1) {
                         for (dj in -1..1) {
@@ -1016,8 +1050,10 @@ class BanditAccessibilityService : AccessibilityService() {
     private fun saveDebugShot(tag: String) {
         try {
             overlayView?.visibility = View.GONE
+            markerView?.visibility = View.GONE
             val b = captureBitmap()
             overlayView?.visibility = View.VISIBLE
+            if (markerHasTarget) markerView?.visibility = View.VISIBLE
             if (b == null) return
             val dir = File(filesDir, "debug"); dir.mkdirs()
             val f = File(dir, "dbg_${System.currentTimeMillis()}_$tag.png")
@@ -1068,6 +1104,7 @@ class BanditAccessibilityService : AccessibilityService() {
         stageTry = 0
         stageDeadline = 0L
         stageEnteredAt = System.currentTimeMillis()
+        hideBanditMarker()
         handler.postDelayed({
             recoveryPending = false
             if (running) stageFind()
@@ -1385,6 +1422,7 @@ class BanditAccessibilityService : AccessibilityService() {
         handler.removeCallbacksAndMessages(null)
         stopGuard()
         removePickOverlay()
+        hideBanditMarker()
         updateNotif("已停止", false)
         setOverlayToggle(false)
         updateOverlayStatus("已停止 · 点「开始」继续")
@@ -1432,12 +1470,14 @@ class BanditAccessibilityService : AccessibilityService() {
             if (!levelAccept(p)) {
                 updateNotif("盗匪等级不符，继续找")
                 updateOverlayStatus("等级不符 · 继续找")
+                hideBanditMarker()
                 handler.postDelayed({ stageFind() }, humanDelay(700))
                 return
             }
             missCount = 0
             noBanditStreak = 0
             lastBandit = p
+            showBanditMarker(p.x, p.y, "锁定 候选${cands.size}·$src")
             updateNotif("已锁定盗匪，点击前重新定位")
             updateOverlayStatus("已锁定盗匪 · 准备点击(跟随移动)")
             // 点击前再实时重新定位一次：盗匪在 1~2s 停顿期间会移动，必须跟随最新位置
@@ -1445,8 +1485,10 @@ class BanditAccessibilityService : AccessibilityService() {
                 if (!running) return@postDelayed
                 val live = reacquireBandit() ?: p
                 lastBandit = live
+                showBanditMarker(live.x, live.y, "点击盗匪")
                 updateOverlayStatus("点击盗匪 @(${live.x},${live.y})")
                 dispatchTap(live.x, live.y) {
+                    hideBanditMarker()
                     stage = ST_ATTACK
                     stageTry = 0
                     stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
@@ -1455,6 +1497,7 @@ class BanditAccessibilityService : AccessibilityService() {
             }, stepDelay())
             return
         }
+        hideBanditMarker()
         missCount++
         noBanditStreak++
         if (missCount >= 3) {
@@ -1557,6 +1600,8 @@ class BanditAccessibilityService : AccessibilityService() {
 
     private fun stageAttack() {
         if (!running) return
+        // 进入攻击/菜单识别阶段，隐藏绿圈标记（避免被录屏截到、干扰按钮颜色识别）
+        hideBanditMarker()
         // 盗匪可能移动了，进入攻击阶段先重新定位一次，菜单扫描中心跟随最新位置
         val live = reacquireBandit()
         if (live != null) lastBandit = live
@@ -2544,6 +2589,53 @@ class BanditAccessibilityService : AccessibilityService() {
             if (isRunning) "⏸ 停止" else "▶ 开始"
     }
 
+    // ---------------- 盗匪检测标记（可视化锁定位置） ----------------
+
+    /** 创建屏幕上的「绿圈十字」标记层（不拦截触摸，避免吃掉点击） */
+    private fun initMarkerView() {
+        val wm = windowManager ?: return
+        if (markerView != null) return
+        val p = WindowManager.LayoutParams(
+            MARKER_SIZE, MARKER_SIZE,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            else
+                WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        p.gravity = Gravity.TOP or Gravity.START
+        p.x = -MARKER_SIZE
+        p.y = -MARKER_SIZE
+        val v = MarkerView(this)
+        try {
+            wm.addView(v, p)
+            markerView = v
+            markerParams = p
+        } catch (e: Exception) {
+            Log.e(TAG, "add marker failed", e)
+        }
+    }
+
+    /** 在 (x,y) 处显示标记；只用于「找盗匪」阶段，进入攻击后由 hideBanditMarker 隐藏，
+     *  以免绿圈被录屏截到、干扰「放射菜单按钮」等颜色识别。 */
+    private fun showBanditMarker(x: Int, y: Int, label: String) {
+        val v = markerView ?: return
+        val p = markerParams ?: return
+        v.labelText = label
+        v.invalidate()
+        p.x = (x - MARKER_SIZE / 2).coerceIn(0, (screenWidth - MARKER_SIZE).coerceAtLeast(0))
+        p.y = (y - MARKER_SIZE / 2).coerceIn(0, (screenHeight - MARKER_SIZE).coerceAtLeast(0))
+        markerHasTarget = true
+        v.visibility = View.VISIBLE
+        try { windowManager?.updateViewLayout(v, p) } catch (e: Exception) { /* ignore */ }
+    }
+
+    private fun hideBanditMarker() {
+        markerHasTarget = false
+        markerView?.visibility = View.GONE
+    }
+
     private fun updateOverlayStatus(text: String) {
         overlayStatus?.text = text
     }
@@ -2766,5 +2858,43 @@ class BanditAccessibilityService : AccessibilityService() {
             imageReader?.close()
             mediaProjection?.stop()
         } catch (e: Exception) { /* ignore */ }
+    }
+}
+
+/**
+ * 盗匪检测标记：一个绿圈 + 十字准星 + 文字标签，画在屏幕绝对坐标 (x,y) 处，
+ * 用于直观显示「当前锁定的盗匪位置」。不拦截触摸（FLAG_NOT_TOUCHABLE），
+ * 所以不会吃掉游戏点击。只挂在「找盗匪」阶段，进入攻击即隐藏，避免被录屏截到。
+ */
+private class MarkerView(context: Context) : View(context) {
+    private val ring = Paint().apply {
+        color = Color.parseColor("#00E676")
+        style = Paint.Style.STROKE
+        strokeWidth = 5f
+        isAntiAlias = true
+    }
+    private val cross = Paint().apply {
+        color = Color.parseColor("#FFEB3B")
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        isAntiAlias = true
+    }
+    private val txt = Paint().apply {
+        color = Color.parseColor("#FFEB3B")
+        textSize = 30f
+        isAntiAlias = true
+    }
+    var labelText: String = ""
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val w = width.toFloat()
+        val h = height.toFloat()
+        canvas.drawCircle(w / 2f, h / 2f, Math.min(w, h) / 2f - 8f, ring)
+        canvas.drawLine(w / 2f, 10f, w / 2f, h - 10f, cross)
+        canvas.drawLine(10f, h / 2f, w - 10f, h / 2f, cross)
+        if (labelText.isNotEmpty()) {
+            canvas.drawText(labelText, 12f, 36f, txt)
+        }
     }
 }
