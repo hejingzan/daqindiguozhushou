@@ -139,6 +139,7 @@ class MainActivity : AppCompatActivity() {
         radioHuman = findViewById(R.id.radio_human)
         radioScan = findViewById(R.id.radio_scan)
         radioLevel = findViewById(R.id.radio_level)
+        radioMode = findViewById(R.id.radio_mode)
         editRadius = findViewById(R.id.edit_radius)
         editLiPixel = findViewById(R.id.edit_lipixel)
         editActStart = findViewById(R.id.edit_act_start)
