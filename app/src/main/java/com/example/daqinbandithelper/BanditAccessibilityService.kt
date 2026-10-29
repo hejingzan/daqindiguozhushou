@@ -362,7 +362,7 @@ class BanditAccessibilityService : AccessibilityService() {
         val duration = Random.nextLong(55, 150)
         val stroke = GestureDescription.StrokeDescription(path, 0, duration)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        dispatchGesture(gesture, object : GestureDescription.GestureResultCallback() {
+        dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 onDone?.invoke()
             }
