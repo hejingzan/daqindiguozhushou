@@ -1575,6 +1575,7 @@ class BanditAccessibilityService : AccessibilityService() {
     private var pickMode = false
     private var pickOverlay: View? = null
     private var pickParams: WindowManager.LayoutParams? = null
+    private var pickAutoCloseRunnable: Runnable? = null
 
     private fun autoCalibrate() {
         if (running || calibrating) return
@@ -1651,31 +1652,71 @@ class BanditAccessibilityService : AccessibilityService() {
 
     /** 自动识别失败时，弹全屏提示让用户点一下盗匪的位置，从该点采模板继续 */
     /** 通用「请点一下屏幕某处」拾取浮层 */
+    /**
+     * 通用「请点一下屏幕某处」拾取浮层。
+     * 修复：原版全屏遮罩没有任何取消入口，且盖在系统导航栏之上，一旦用户不知道要「点一下任意处」或
+     * 点击处理异常就会永久卡死、连返回键都点不到。现改为：
+     *  - 顶部提示 + 底部醒目「✕ 取消」按钮，点击直接关闭，杜绝卡死；
+     *  - 点选坐标前先 removePickOverlay()，即便 onTap 内部抛异常浮层也已移除；
+     *  - 60 秒超时兜底自动关闭，任何情况下都不会再卡住屏幕。
+     */
     private fun showPickOverlay(text: String, onTap: (Int, Int) -> Unit) {
         pickMode = true
-        val root = LinearLayout(this)
-        root.orientation = LinearLayout.VERTICAL
+        val root = android.widget.FrameLayout(this)
         root.setBackgroundColor(Color.argb(140, 0, 0, 0))
+
         val tv = TextView(this)
         tv.setTextColor(Color.WHITE)
         tv.textSize = 18f
-        tv.setPadding(48, 90, 48, 48)
+        tv.setPadding(48, 130, 48, 48)
         tv.text = text
         root.addView(
             tv,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            )
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply { gravity = android.view.Gravity.TOP }
         )
+
+        val cancel = Button(this)
+        cancel.text = "✕ 取消（不锁定 / 不拾取）"
+        cancel.textSize = 16f
+        cancel.setPadding(28, 10, 28, 10)
+        cancel.setBackgroundColor(Color.parseColor("#B71C1C"))
+        cancel.setTextColor(Color.WHITE)
+        cancel.setOnClickListener {
+            try { removePickOverlay() } catch (_: Exception) {}
+            pickMode = false
+            try { onTap(-1, -1) } catch (_: Exception) {}
+        }
+        root.addView(
+            cancel,
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = android.view.Gravity.CENTER_HORIZONTAL or android.view.Gravity.BOTTOM
+                bottomMargin = 90
+            }
+        )
+
+        // 点「取消」按钮时事件被子 View 消费，不会走到这里；点其它任意位置 = 选点
         root.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_DOWN) {
-                // 用 rawX/rawY：全屏浮层即使在带 padding 的容器里，也始终等于真实屏幕坐标，
-                // 与 dispatchGesture 的点击坐标系完全一致，避免「点选坐标和游戏对不上」。
-                onTap(event.rawX.toInt(), event.rawY.toInt())
+                val x = event.rawX.toInt()
+                val y = event.rawY.toInt()
+                // 关键：先移除浮层再回调，保证即使 onTap 异常浮层也已消失，不再卡屏
+                try { removePickOverlay() } catch (_: Exception) {}
+                pickMode = false
+                try {
+                    onTap(x, y)
+                } catch (e: Exception) {
+                    Log.e(TAG, "pick onTap failed", e)
+                }
                 true
             } else false
         }
+
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -1690,10 +1731,19 @@ class BanditAccessibilityService : AccessibilityService() {
             windowManager?.addView(root, params)
             pickOverlay = root
             pickParams = params
+            // 超时兜底：任何情况下 60 秒后自动关闭，彻底避免卡死
+            pickAutoCloseRunnable = Runnable {
+                if (pickMode) {
+                    Log.w(TAG, "pick overlay auto-closed by timeout")
+                    removePickOverlay()
+                    try { onTap(-1, -1) } catch (_: Exception) {}
+                }
+            }
+            handler.postDelayed(pickAutoCloseRunnable!!, 60000)
         } catch (e: Exception) {
             Log.e(TAG, "pick overlay failed", e)
             pickMode = false
-            onTap(-1, -1)
+            try { onTap(-1, -1) } catch (_: Exception) {}
         }
     }
 
@@ -1864,6 +1914,8 @@ class BanditAccessibilityService : AccessibilityService() {
     }
 
     private fun removePickOverlay() {
+        pickAutoCloseRunnable?.let { handler.removeCallbacks(it) }
+        pickAutoCloseRunnable = null
         try {
             pickOverlay?.let { windowManager?.removeView(it) }
         } catch (e: Exception) { /* ignore */ }
