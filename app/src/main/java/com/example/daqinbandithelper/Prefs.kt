@@ -182,6 +182,15 @@ class Prefs(context: Context) {
     fun hasLockedBandit(): Boolean = getLockedBanditX() >= 0 && getLockedBanditY() >= 0
     fun clearLockedBandit() = sp.edit().putInt("locked_bandit_x", -1).putInt("locked_bandit_y", -1).apply()
 
+    // ---------------- 攻击射程（里） ----------------
+
+    /**
+     * 只打「距我方城池 X 里以内」的盗匪；0 = 不限制（默认）。
+     * 距离用「脚点」换算（每里像素 = getLiPixel），比用图标中心更贴近真实地面距离。
+     */
+    fun getMaxAttackLi(): Int = sp.getInt("max_attack_li", 0)
+    fun setMaxAttackLi(v: Int) = sp.edit().putInt("max_attack_li", v.coerceIn(0, 100000)).apply()
+
     // ---------------- 盗匪等级筛选 ----------------
 
     /** 等级标签相对盗匪图标的偏移（校准时记录） */

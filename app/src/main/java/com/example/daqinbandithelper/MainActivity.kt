@@ -61,6 +61,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var editBaseX: EditText
     private lateinit var editBaseY: EditText
     private lateinit var editRadial: EditText
+    private lateinit var editRangeLi: EditText
     private lateinit var textBase: TextView
     private lateinit var btnPickBase: Button
 
@@ -215,6 +216,7 @@ class MainActivity : AppCompatActivity() {
         editBaseX = findViewById(R.id.edit_base_x)
         editBaseY = findViewById(R.id.edit_base_y)
         editRadial = findViewById(R.id.edit_radial)
+        editRangeLi = findViewById(R.id.edit_range_li)
 
         when (prefs.getHumanizeLevel()) {
             0 -> radioHuman.check(R.id.rb_low)
@@ -249,6 +251,7 @@ class MainActivity : AppCompatActivity() {
             editBaseY.setText(prefs.getBaseY().toString())
         }
         editRadial.setText(prefs.getRadialRadius().toString())
+        editRangeLi.setText(prefs.getMaxAttackLi().toString())
 
         btnStart.setOnClickListener { onStartClicked() }
         btnCalib.setOnClickListener { onCalibClicked() }
@@ -509,6 +512,9 @@ class MainActivity : AppCompatActivity() {
         // 放射菜单半径（按钮离盗匪多远，默认约 24px@1280，用户实测）
         val rr = editRadial.text.toString().toIntOrNull()?.coerceIn(8, 400) ?: 24
         prefs.setRadialRadius(rr)
+        // 攻击射程（里）：只打够得着的盗匪，0 = 不限制
+        val rangeLi = editRangeLi.text.toString().toIntOrNull()?.coerceIn(0, 100000) ?: 0
+        prefs.setMaxAttackLi(rangeLi)
         // 盗匪名字标签 → 实体点击点 下移比例（点名落空时点不中盗匪，调大此值）
         val noff = editNameOffset.text.toString().toFloatOrNull()?.coerceIn(0f, 0.3f) ?: 0.05f
         prefs.setNameBodyOffsetRatio(noff)

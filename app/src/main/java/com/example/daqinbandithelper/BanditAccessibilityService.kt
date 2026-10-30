@@ -100,6 +100,16 @@ class BanditAccessibilityService : AccessibilityService() {
         private const val SCAN_ROWS = 4
         private const val SCAN_COLS = 8
 
+        // —— 图色识别参数（模板匹配 + 脚点定位）——
+        /** 一个红褐色像素团至少要多少像素才算「盗匪实体」（过滤噪点/文字） */
+        private const val BLOOD_MIN_PIXELS = 24
+        /** 脚点精修的搜索半径（像素）：在候选附近多大范围内找精灵本体 */
+        private const val BLOB_SEARCH_R = 46
+        /** 「盗匪核心模板」的采集半径（像素）：只取图标本体一小块，比整块背景更可靠 */
+        private const val CORE_TPL_R = 14
+        /** 与核心模板的全分辨率差异小于此值 → 认为「很像真盗匪」（仅用于择优，不做硬剔除） */
+        private const val TPL_GOOD_DIFF = 40
+
         // —— 实机录像（1280x620）实测几何参数 ——
         private const val REF_W = 1280.0
         private const val ANG_ATTACK = -69.0  // 「讨伐」相对盗匪的角度（≈1点钟）
@@ -156,6 +166,8 @@ class BanditAccessibilityService : AccessibilityService() {
 
     // 模板
     private var banditTpl: Bitmap? = null
+    /** 盗匪「核心」小模板（只含图标本体），用于置信度择优 */
+    private var banditCoreTpl: Bitmap? = null
     private var attackTpl: Bitmap? = null
     private var battleTpl: Bitmap? = null
     private var selectTpl: Bitmap? = null      // 「全选」状态
@@ -304,6 +316,7 @@ class BanditAccessibilityService : AccessibilityService() {
         matchThreshold = prefs.getMatchThreshold()
         applyHumanLevel(prefs.getHumanizeLevel())
         banditTpl = loadTpl("bandit")
+        banditCoreTpl = loadTpl("bandit_core")
         attackTpl = loadTpl("attack")
         battleTpl = loadTpl("battle")
         selectTpl = loadTpl("select")
@@ -704,16 +717,104 @@ class BanditAccessibilityService : AccessibilityService() {
         }
     }
 
-    private data class BanditCand(val x: Int, val y: Int, val score: Int)
+    private data class BanditCand(
+        val x: Int,
+        val y: Int,
+        val score: Int,
+        /** 脚点（精灵底边 / 地面位置），用于算真实距离；-1 表示未测 */
+        val footY: Int = -1,
+        /** 与「盗匪核心模板」的全分辨率差异，越小越像真盗匪；9999 = 未比对 */
+        val tdiff: Int = 9999
+    )
+
+    /**
+     * 红褐色「盗匪像素」判定。
+     * 颜色扫描与脚点精修共用同一套判据，保证两条路径口径一致。
+     */
+    private fun isBanditPixel(c: Int): Boolean {
+        val r = Color.red(c); val g = Color.green(c); val b = Color.blue(c)
+        // 红明显强于蓝、红略强于绿，且整体足够亮（排除暗红砖块/地形）
+        return r > 140 && (r - b) > 55 && (r - g) > 12 && r > g + 10
+    }
+
+    /** 一个红褐色像素团：质心（图标中心）、脚点（底边）、包围盒、面积 */
+    private data class BlobHit(
+        val cx: Int,
+        val cy: Int,
+        val footY: Int,
+        val minX: Int,
+        val maxX: Int,
+        val minY: Int,
+        val maxY: Int,
+        val area: Int
+    )
+
+    /**
+     * 在指定矩形内找「红褐色像素团」。
+     * 返回质心（=精灵图标中心，作为点击点）、脚点（=精灵底边，作为地面位置），
+     * 这比「网格单元中心」精确得多，也是文章里「用脚点而非中心点更准确」的落地。
+     */
+    private fun banditBlobIn(
+        screen: Bitmap,
+        x0: Int,
+        x1: Int,
+        y0: Int,
+        y1: Int
+    ): BlobHit? {
+        var sx = 0L; var sy = 0L; var n = 0
+        var minX = Int.MAX_VALUE; var maxX = Int.MIN_VALUE
+        var minY = Int.MAX_VALUE; var maxY = Int.MIN_VALUE
+        val ya = y0.coerceIn(0, screen.height - 1)
+        val yb = y1.coerceIn(0, screen.height - 1)
+        val xa = x0.coerceIn(0, screen.width - 1)
+        val xb = x1.coerceIn(0, screen.width - 1)
+        for (y in ya..yb) {
+            for (x in xa..xb) {
+                if (!isBanditPixel(screen.getPixel(x, y))) continue
+                sx += x; sy += y; n++
+                if (x < minX) minX = x
+                if (x > maxX) maxX = x
+                if (y < minY) minY = y
+                if (y > maxY) maxY = y
+            }
+        }
+        if (n < BLOOD_MIN_PIXELS) return null
+        return BlobHit(
+            cx = (sx / n).toInt(),
+            cy = (sy / n).toInt(),
+            footY = maxY,
+            minX = minX, maxX = maxX, minY = minY, maxY = maxY,
+            area = n
+        )
+    }
+
+    /**
+     * 脚点精修：对已有候选，在其邻域做像素级扫描，把粗略位置换成精灵的真实图标中心 + 脚点。
+     * 邻域找不到红褐色团（说明候选其实是误检）就保持原坐标，绝不把正确目标改错。
+     */
+    private fun refineFootPoints(cands: List<BanditCand>, screen: Bitmap): List<BanditCand> {
+        if (cands.isEmpty()) return cands
+        val out = ArrayList<BanditCand>(cands.size)
+        for (c in cands) {
+            val hit = banditBlobIn(
+                screen,
+                c.x - BLOB_SEARCH_R, c.x + BLOB_SEARCH_R,
+                c.y - BLOB_SEARCH_R, c.y + BLOB_SEARCH_R
+            )
+            out.add(
+                if (hit == null) c
+                else BanditCand(hit.cx, hit.cy, c.score, hit.footY, c.tdiff)
+            )
+        }
+        return out
+    }
 
     /**
      * 自动找盗匪（无模板也能用）：在地图主区域扫描「红褐色密集小团」，
      * 把所有局部密集点都当成候选盗匪，再交给 pickNearestBandit 选出离部队最近的那个。
      * 这样符合「搜索最近盗匪」的要求，而不是只抓最红的一坨（可能很远）。
      */
-    private fun findBanditCandidates(): List<BanditCand> {
-        overlayView?.visibility = View.GONE
-        val screen = captureBitmap() ?: return emptyList()
+    private fun findBanditCandidates(screen: Bitmap): List<BanditCand> {
         val cands = mutableListOf<BanditCand>()
         try {
             val x0 = (screen.width * 0.04).toInt()
@@ -732,11 +833,7 @@ class BanditAccessibilityService : AccessibilityService() {
                 var x = x0
                 while (x < x1) {
                     val ci = ((x - x0) / cell).coerceIn(0, cols - 1)
-                    val c = screen.getPixel(x, y)
-                    val r = Color.red(c); val g = Color.green(c); val b = Color.blue(c)
-                    // 红褐色盗匪标记：红明显强于蓝、红略强于绿，且整体足够亮（排除暗红砖块/地形）。
-                    // 比旧版更严格，减少地图红褐色背景造成的误检。
-                    if (r > 140 && (r - b) > 55 && (r - g) > 12 && r > g + 10) grid[ri][ci]++
+                    if (isBanditPixel(screen.getPixel(x, y))) grid[ri][ci]++
                     x += 3
                 }
                 y += 3
@@ -766,24 +863,64 @@ class BanditAccessibilityService : AccessibilityService() {
             cands.addAll(merged)
         } catch (e: Exception) {
             Log.e(TAG, "findBanditCandidates err", e)
-        } finally {
-            overlayView?.visibility = View.VISIBLE
-            screen.recycle()
         }
         return cands
     }
 
-    /** 从候选里挑离参考点 (refX,refY) 最近的盗匪（参考点默认屏幕中心=部队位置） */
+    /**
+     * 挑目标（文章里的「判断」环节）：
+     *  1) 距离用「脚点」算（脚点才是盗匪真正站在地面的位置，比图标中心更接近真实距离）
+     *  2) 距离相近的一批里，用模板置信度择优（挑最像真盗匪的那个）
+     * 置信度只用于「择优」，绝不排除任何候选 —— 宁可打错一次，也不放过真目标。
+     */
     private fun pickNearestBandit(cands: List<BanditCand>, refX: Int, refY: Int): BanditCand? {
         if (cands.isEmpty()) return null
         var best: BanditCand? = null
-        var bestD = Int.MAX_VALUE
+        var bestD = Long.MAX_VALUE
         for (c in cands) {
-            val d = (c.x - refX) * (c.x - refX) + (c.y - refY) * (c.y - refY)
+            val d = distSq(c, refX, refY)
             if (d < bestD) { bestD = d; best = c }
         }
-        return best
+        val b = best ?: return null
+        if (cands.size <= 1) return b
+        // 与最近目标距离相近的候选才有资格参与置信度择优
+        val cutoff = bestD * 16 / 10 + 400
+        val near = cands.filter { distSq(it, refX, refY) <= cutoff }
+        val trusted = near.filter { it.tdiff <= TPL_GOOD_DIFF }
+        if (trusted.isEmpty()) return b
+        return trusted.sortedBy { it.tdiff }.first()
     }
+
+    /** 候选到参考点的平方距离（用脚点 y，反映真实地面位置） */
+    private fun distSq(c: BanditCand, refX: Int, refY: Int): Long {
+        val fy = if (c.footY >= 0) c.footY else c.y
+        val dx = (c.x - refX).toLong()
+        val dy = (fy - refY).toLong()
+        return dx * dx + dy * dy
+    }
+
+    /**
+     * 目标与参考点之间的「里」数（按每里像素把屏幕距离换算成游戏里的里）。
+     * 用脚点计算，比用图标中心更准。
+     */
+    private fun distanceLi(c: BanditCand, refX: Int, refY: Int): Float {
+        val k = prefs.getLiPixel().coerceIn(0.2f, 50f)
+        return Math.sqrt(distSq(c, refX, refY).toDouble()).toFloat() / k
+    }
+
+    /** 射程过滤：只保留「离我方城池 X 里以内」的盗匪（射程=0 时不过滤，保持原行为） */
+    private fun filterByAttackRange(cands: List<BanditCand>, refX: Int, refY: Int): List<BanditCand> {
+        val maxLi = prefs.getMaxAttackLi()
+        if (maxLi <= 0) return cands
+        return cands.filter { distanceLi(it, refX, refY) <= maxLi }
+    }
+
+    /**
+     * 我方城池（部队）位置：优先用「固定位置」（用户在游戏里点选的村庄），
+     * 没有则退回「固定点百分比」（默认屏幕中线）。
+     */
+    private fun refX(): Int = if (prefs.hasBasePos()) prefs.getBaseX() else centerX()
+    private fun refY(): Int = if (prefs.hasBasePos()) prefs.getBaseY() else centerY()
 
     /** 搜索中心：可在 APP 里修改的「固定点」（屏幕宽/高比例，默认屏幕中线） */
     private fun centerX(): Int =
@@ -809,7 +946,7 @@ class BanditAccessibilityService : AccessibilityService() {
      * 文字（或 contentDescription）含「盗匪喽啰 / 盗匪精英 / 盗匪」等关键词的，取其屏幕中心坐标。
      * 这是游戏里盗匪头顶的名字标签，比颜色扫描稳定得多，且天然免模板。
      */
-    private fun findBanditsByText(): List<BanditCand> {
+    private fun findBanditsByText(screen: Bitmap): List<BanditCand> {
         val root = rootInActiveWindow ?: return emptyList()
         val found = mutableListOf<AccessibilityNodeInfo>()
         try {
@@ -835,12 +972,24 @@ class BanditAccessibilityService : AccessibilityService() {
             val rect = Rect()
             try { n.getBoundsInScreen(rect) } catch (_: Exception) { continue }
             if (rect.isEmpty) continue
-            // 文字节点是「盗匪头顶名字标签」；可点击的盗匪实体在名字标签下方。
-            // 向下偏移 = 名字标签高度 * 1.5 + 屏高 * 偏移比例，让点击点落到实体而非名字上。
+            // 文字节点是「盗匪头顶名字标签」；真正可点击的实体在标签下方。
+            // 这里不再用「猜一个比例」下移，而是直接在标签下方做像素级扫描，
+            // 找出红褐色精灵本体 → 得到精确的图标中心(点击点) 与脚点(算距离用)。
             val bx = rect.centerX()
-            val off = (rect.height() * 1.5 + screenHeight * prefs.getNameBodyOffsetRatio()).toInt()
-            val by = (rect.bottom + off).coerceIn(2, (screenHeight - 2).coerceAtLeast(3))
-            cands.add(BanditCand(bx, by, 9999))
+            val down = (screen.height * 0.14).toInt().coerceAtLeast(40)
+            val hit = banditBlobIn(
+                screen,
+                bx - 55, bx + 55,
+                rect.bottom + 2, rect.bottom + down
+            )
+            if (hit != null) {
+                cands.add(BanditCand(hit.cx, hit.cy, 9999, hit.footY))
+            } else {
+                // 没扫到像素团（可能被遮挡/动画帧）→ 退回旧的比例估算，保证不漏
+                val off = (rect.height() * 1.5 + screenHeight * prefs.getNameBodyOffsetRatio()).toInt()
+                val by = (rect.bottom + off).coerceIn(2, (screenHeight - 2).coerceAtLeast(3))
+                cands.add(BanditCand(bx, by, 9999))
+            }
             n.recycle()
         }
         return cands
@@ -857,8 +1006,9 @@ class BanditAccessibilityService : AccessibilityService() {
             return Point(lockedBanditX, lockedBanditY)
         }
         val all = findBanditCandidatesAll()
-        val cands = filterWithin(all.first, centerX(), centerY(), centerRadiusPx())
-        val np = pickNearestBandit(cands, centerX(), centerY())
+        val cands = filterWithin(all.first, refX(), refY(), centerRadiusPx())
+        val inRange = filterByAttackRange(cands, refX(), refY())
+        val np = pickNearestBandit(inRange, refX(), refY())
         return np?.let { Point(it.x, it.y) }
     }
 
@@ -870,23 +1020,67 @@ class BanditAccessibilityService : AccessibilityService() {
     private fun searchModeLabel(): String =
         if (prefs.isFullScreenSearch()) "全屏" else "范围"
 
+    /**
+     * 综合找盗匪（文章里的「看见」环节）：
+     *   1) 无障碍文字给出名字标签位置（粗定位）
+     *   2) 像素级扫描把粗定位换成精灵真实图标中心 + 脚点（精定位）
+     *   3) 模板匹配给每个候选打置信度（越像真盗匪分越低）
+     * 文字识别优先，识别不到再退回颜色扫描；整条链路只截一次屏。
+     */
     private fun findBanditCandidatesAll(): Pair<List<BanditCand>, String> {
-        val byText = findBanditsByText()
-        if (byText.isNotEmpty()) {
-            updateOverlayStatus("文字识别盗匪 ${byText.size} 个 · ${searchModeLabel()}")
-            return Pair(byText, "文字")
+        overlayView?.visibility = View.GONE
+        val screen = captureBitmap()
+        overlayView?.visibility = View.VISIBLE
+        if (screen == null) return Pair(emptyList(), "无画面")
+        try {
+            val byText = findBanditsByText(screen)
+            val base = if (byText.isNotEmpty()) {
+                updateOverlayStatus("文字识别盗匪 ${byText.size} 个 · ${searchModeLabel()}")
+                byText
+            } else {
+                val byColor = findBanditCandidates(screen)
+                if (byColor.isNotEmpty()) {
+                    updateOverlayStatus("颜色识别盗匪 ${byColor.size} 个 · ${searchModeLabel()}")
+                }
+                byColor
+            }
+            if (base.isEmpty()) return Pair(emptyList(), "无目标")
+            // 脚点精修：把粗坐标换成精灵本体中心 + 脚点
+            val refined = refineFootPoints(base, screen)
+            // 模板置信度：与「盗匪核心模板」全分辨率比对
+            val scored = scoreByTemplate(refined, screen)
+            val src = if (byText.isNotEmpty()) "文字" else "颜色"
+            return Pair(scored, src)
+        } catch (e: Exception) {
+            Log.e(TAG, "findBanditCandidatesAll err", e)
+            return Pair(emptyList(), "异常")
+        } finally {
+            screen.recycle()
         }
-        val byColor = findBanditCandidates()
-        if (byColor.isNotEmpty()) {
-            updateOverlayStatus("颜色识别盗匪 ${byColor.size} 个 · ${searchModeLabel()}")
-        }
-        return Pair(byColor, "颜色")
     }
 
-    /** 兼容旧调用：返回屏幕上离中心最近的盗匪点（自动校准时也能用） */
+    /**
+     * 模板匹配打分（文章：模板匹配 + 置信度阈值）。
+     * 对每个候选算「与盗匪核心模板的全分辨率差异」，越小越像真盗匪。
+     * 差异值写回候选，后续挑选时用于择优；模板不可用时保持原样，不影响主流程。
+     */
+    private fun scoreByTemplate(cands: List<BanditCand>, screen: Bitmap): List<BanditCand> {
+        val tpl = banditCoreTpl ?: return cands
+        if (cands.isEmpty()) return cands
+        val out = ArrayList<BanditCand>(cands.size)
+        for (c in cands) {
+            val d = diffIn(screen, tpl, c.x, c.y)
+            out.add(BanditCand(c.x, c.y, c.score, c.footY, d.toInt().coerceIn(0, 9999)))
+        }
+        return out
+    }
+
+    /**
+     * 便捷入口：屏幕上离参考点最近的盗匪（脚点已精修）。
+     */
     private fun scanBanditByColor(): Point? {
-        val cands = findBanditCandidates()
-        val best = pickNearestBandit(cands, screenWidth / 2, screenHeight / 2)
+        val (cands, _src) = findBanditCandidatesAll()
+        val best = pickNearestBandit(cands, refX(), refY())
         return best?.let { Point(it.x, it.y) }
     }
 
@@ -937,6 +1131,18 @@ class BanditAccessibilityService : AccessibilityService() {
     private fun diffAt(tpl: Bitmap, cx: Int, cy: Int): Double {
         val screen = captureBitmap() ?: return 999.0
         try {
+            return diffIn(screen, tpl, cx, cy)
+        } finally {
+            screen.recycle()
+        }
+    }
+
+    /**
+     * 在「已截取的画面」上做全分辨率比对（不重新截图，可在一次截图里比对多个候选）。
+     * 与 [diffAt] 同一判据，只是把画面参数化，避免每个候选都截一次屏。
+     */
+    private fun diffIn(screen: Bitmap, tpl: Bitmap, cx: Int, cy: Int): Double {
+        return try {
             val w = tpl.width
             val h = tpl.height
             val x0 = cx - w / 2
@@ -954,11 +1160,9 @@ class BanditAccessibilityService : AccessibilityService() {
                     n += 3
                 }
             }
-            return if (n == 0) 999.0 else sum.toDouble() / n
+            if (n == 0) 999.0 else sum.toDouble() / n
         } catch (e: Exception) {
-            return 999.0
-        } finally {
-            screen.recycle()
+            999.0
         }
     }
 
@@ -1246,17 +1450,13 @@ class BanditAccessibilityService : AccessibilityService() {
         autoTries++
         // 先探一下截图是否就绪（虚拟屏首帧常延迟）
         val probe = captureBitmap()
-        probe?.recycle()
         val shotOk = probe != null
-        // 优先用无障碍文字识别盗匪（最稳，免模板）
-        val txt = findBanditsByText()
-        if (txt.isNotEmpty()) {
-            finishAutoCalibrate(Point(txt[0].x, txt[0].y))
-            return
-        }
-        val p = scanBanditByColor()
-        if (p != null) {
-            finishAutoCalibrate(p)
+        probe?.recycle()
+        // 走完整的「看见」链路：文字优先 → 颜色兜底 → 脚点精修 → 模板置信度
+        val (cands, _src) = findBanditCandidatesAll()
+        val best = pickNearestBandit(cands, refX(), refY())
+        if (best != null) {
+            finishAutoCalibrate(Point(best.x, best.y))
             return
         }
         if (autoTries < AUTO_MAX) {
@@ -1275,6 +1475,12 @@ class BanditAccessibilityService : AccessibilityService() {
     private fun finishAutoCalibrate(p: Point) {
         captureTemplateFile("bandit", p.x, p.y, 55)
         banditTpl = loadTpl("bandit")
+        // 核心小模板（只含图标本体）→ 后续置信度择优
+        val core = refineToIcon(p.x, p.y)
+        if (core != null) {
+            captureTemplateFile("bandit_core", core.x, core.y, CORE_TPL_R)
+            banditCoreTpl = loadTpl("bandit_core")
+        }
         if (!prefs.hasBasePos()) {
             prefs.setBaseX(screenWidth / 2)
             prefs.setBaseY(screenHeight / 2)
@@ -1381,15 +1587,33 @@ class BanditAccessibilityService : AccessibilityService() {
     private fun onLockBandit(x: Int, y: Int) {
         pickMode = false
         removePickOverlay()
+        // 等拾取浮层真正从画面上消失后再截图，否则半透明蒙层会把颜色压暗导致扫不到精灵
+        handler.postDelayed({ finishLockBandit(x, y) }, 260)
+    }
+
+    /** 锁定收尾：精修锚点 → 存坐标 → 采核心模板 → 按几何算按钮偏移 */
+    private fun finishLockBandit(x: Int, y: Int) {
+        // 精修锚点：把你点的位置换算成精灵真实中心（点到的可能是名字标签或旗帜边缘）。
+        // 找不到红褐色像素团就保持你的落点，绝不擅自乱挪。
+        val ax: Int
+        val ay: Int
+        val hit = refineToIcon(x, y)
+        if (hit != null) { ax = hit.x; ay = hit.y } else { ax = x; ay = y }
+
         banditLocked = true
-        lockedBanditX = x
-        lockedBanditY = y
-        prefs.setLockedBanditX(x)
-        prefs.setLockedBanditY(y)
+        lockedBanditX = ax
+        lockedBanditY = ay
+        prefs.setLockedBanditX(ax)
+        prefs.setLockedBanditY(ay)
         lockMissCount = 0
         prefs.setCalibrated(true)
         calibrated = true
-        lastBandit = Point(x, y)
+        lastBandit = Point(ax, ay)
+
+        // 采一份「盗匪核心模板」（只含图标本体）→ 之后用于置信度择优，
+        // 把最像真盗匪的候选排前面，避免点到地图上颜色相近的红褐色地形。
+        captureTemplateFile("bandit_core", ax, ay, CORE_TPL_R)
+        banditCoreTpl = loadTpl("bandit_core")
 
         val k = if (screenWidth > 0) screenWidth / REF_W else 1.0
         val r = prefs.getRadialRadius().coerceAtLeast(8) * k
@@ -1401,8 +1625,33 @@ class BanditAccessibilityService : AccessibilityService() {
         prefs.setBattleOffY((r * Math.sin(aB)).toInt())
         prefs.setHasBtnOffsets(true)
 
-        toast("已锁定盗匪✅ 按钮按你实测几何(1/3点钟,${prefs.getRadialRadius()}px)定点 · 点「开始」挂机")
+        val moved = if (hit != null) "已吸附到盗匪中心($ax,$ay)" else "已锁定($ax,$ay)"
+        toast("$moved ✅ 按钮按你实测几何(1/3点钟,${prefs.getRadialRadius()}px)定点 · 点「开始」挂机")
         updateOverlayStatus("已锁定✅ · 点「开始」挂机")
+    }
+
+    /**
+     * 把「用户点的位置」精修成盗匪精灵的真实中心：
+     * 在落点附近找红褐色像素团，返回其质心。找不到就返回 null（保持原落点）。
+     */
+    private fun refineToIcon(cx: Int, cy: Int): Point? {
+        overlayView?.visibility = View.GONE
+        val screen = captureBitmap()
+        overlayView?.visibility = View.VISIBLE
+        if (screen == null) return null
+        try {
+            val hit = banditBlobIn(
+                screen,
+                cx - 55, cx + 55,
+                cy - 32, cy + 72
+            ) ?: return null
+            return Point(hit.cx, hit.cy)
+        } catch (e: Exception) {
+            Log.e(TAG, "refineToIcon err", e)
+            return null
+        } finally {
+            screen.recycle()
+        }
     }
 
     /**
@@ -1601,10 +1850,15 @@ class BanditAccessibilityService : AccessibilityService() {
             return
         }
         val (candsRaw, src) = findBanditCandidatesAll()
-        val cands = filterWithin(candsRaw, centerX(), centerY(), centerRadiusPx())
-        val np = pickNearestBandit(cands, centerX(), centerY())
+        val cands = filterWithin(candsRaw, refX(), refY(), centerRadiusPx())
+        // 射程过滤：只打够得着的盗匪（射程=0 时不过滤）
+        val inRange = filterByAttackRange(cands, refX(), refY())
+        val np = pickNearestBandit(inRange, refX(), refY())
         val p = np?.let { Point(it.x, it.y) }
-        updateOverlayStatus("运行中 · 找盗匪…($src 候选${cands.size} · ${searchModeLabel()} · 固定点${centerX()},${centerY()})")
+        val liTxt = np?.let { "${distanceLi(it, refX(), refY()).toInt()}里" } ?: "-"
+        updateOverlayStatus(
+            "找盗匪…($src 候选${cands.size} · 射程内${inRange.size} · 最近$liTxt · ${searchModeLabel()})"
+        )
         if (p != null && !isBlacklisted(p)) {
             if (!levelAccept(p)) {
                 updateNotif("盗匪等级不符，继续找")
@@ -2486,6 +2740,12 @@ class BanditAccessibilityService : AccessibilityService() {
                 CAL_BANDIT -> {
                     captureTemplateFile("bandit", x, y, 55)
                     banditTpl = loadTpl("bandit")
+                    // 同时采一份「核心小模板」（只含图标本体）→ 供置信度择优使用
+                    val core = refineToIcon(x, y)
+                    if (core != null) {
+                        captureTemplateFile("bandit_core", core.x, core.y, CORE_TPL_R)
+                        banditCoreTpl = loadTpl("bandit_core")
+                    }
                     calibBanditX = x
                     calibBanditY = y
                 }
@@ -3041,6 +3301,7 @@ class BanditAccessibilityService : AccessibilityService() {
         overlayView = null
         removeCalibOverlay()
         banditTpl?.recycle()
+        banditCoreTpl?.recycle()
         attackTpl?.recycle()
         battleTpl?.recycle()
         selectTpl?.recycle()

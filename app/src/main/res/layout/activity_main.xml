@@ -351,6 +351,29 @@
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="wrap_content"
+                android:text="只打射程内(里,0=不限)"
+                android:gravity="center_vertical"
+                android:textSize="13sp" />
+
+            <EditText
+                android:id="@+id/edit_range_li"
+                android:layout_width="80dp"
+                android:layout_height="wrap_content"
+                android:hint="0"
+                android:inputType="number"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
                 android:text="每里=多少像素"
                 android:gravity="center_vertical"
                 android:textSize="13sp" />
