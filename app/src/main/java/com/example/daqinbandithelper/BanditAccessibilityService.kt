@@ -1024,6 +1024,14 @@ class BanditAccessibilityService : AccessibilityService() {
      * 文字（或 contentDescription）含「盗匪喽啰 / 盗匪精英 / 盗匪」等关键词的，取其屏幕中心坐标。
      * 这是游戏里盗匪头顶的名字标签，比颜色扫描稳定得多，且天然免模板。
      */
+    /**
+     * 用无障碍文字节点定位盗匪：盗匪头顶的「盗匪-XXX」名字标签是结构化节点，
+     * 其 bounds 直接就是「真实显示坐标」（与 dispatchGesture、浮层坐标完全一致，
+     * 不受 MediaProjection 横竖屏旋转错乱影响），且天然跟着实体移动 → 绿标实时跟随、不点偏。
+     * 标签在实体正上方，实体可点击点 = 标签中心向下偏移（与截图方向无关）；
+     * 再用图像红褐色团做「有限范围」精修（仅在落点附近且差距合理时才采纳，
+     * 避免旋转错乱把点击点推偏）。
+     */
     private fun findBanditsByText(screen: Bitmap): List<BanditCand> {
         val root = rootInActiveWindow ?: return emptyList()
         val found = mutableListOf<AccessibilityNodeInfo>()
@@ -1050,28 +1058,71 @@ class BanditAccessibilityService : AccessibilityService() {
             val rect = Rect()
             try { n.getBoundsInScreen(rect) } catch (_: Exception) { continue }
             if (rect.isEmpty) continue
-            // 文字节点是「盗匪头顶名字标签」；真正可点击的实体在标签下方。
-            // 这里不再用「猜一个比例」下移，而是直接在标签下方做像素级扫描，
-            // 找出红褐色精灵本体 → 得到精确的图标中心(点击点) 与脚点(算距离用)。
             val bx = rect.centerX()
-            val down = (screen.height * 0.14).toInt().coerceAtLeast(40)
-            val hit = banditBlobIn(
-                screen,
-                bx - 55, bx + 55,
-                rect.bottom + 2, rect.bottom + down
-            )
-            if (hit != null) {
-                cands.add(BanditCand(hit.cx, hit.cy, 9999, hit.footY))
-            } else {
-                // 没扫到像素团（被遮挡/动画帧）→ 退回「标签中心下方约 1.3 个标签高度」即实体中心，更紧贴
-                val off = (rect.height() * 1.3 + screenHeight * 0.02f).toInt()
-                val by = (rect.bottom + off).coerceIn(2, (screenHeight - 2).coerceAtLeast(3))
-                cands.add(BanditCand(bx, by, 9999))
-            }
+            // 实体点击点 = 标签中心下方固定偏移（完全与截图方向无关，横竖屏自适应）
+            val offPx = (rect.height() * 1.5 + 24).toInt().coerceAtLeast(20)
+            var by = (rect.bottom + offPx).coerceIn(2, (screenHeight - 2).coerceAtLeast(3))
+            // 图像精修：只在标签下方「有限范围」内找红褐色团，且与文字落点足够接近才采纳
+            try {
+                val hit = banditBlobIn(
+                    screen,
+                    bx - 60, bx + 60,
+                    rect.bottom + 2, rect.bottom + (offPx + 50).coerceAtLeast(70)
+                )
+                if (hit != null && Math.abs(hit.cx - bx) <= 70 && Math.abs(hit.cy - by) <= 130) {
+                    by = hit.cy
+                }
+            } catch (_: Exception) { /* 精修失败就用文字落点，不致命 */ }
+            cands.add(BanditCand(bx, by, 9999, -1))
             n.recycle()
         }
         return cands
     }
+
+    /** 识别到的按钮：屏幕中心坐标 + 命中文本 */
+    private data class BtnHit(val x: Int, val y: Int, val text: String)
+
+    /**
+     * 在屏幕无障碍节点里找含有关键字的按钮，返回其中心坐标与文本。
+     * 坐标是「真实显示坐标」（与 dispatchGesture / 浮层坐标一致，不受截图横竖屏旋转影响），
+     * 取「面积最小」的匹配节点，避免点到大容器框。识别不到返回 null（调用方再走颜色/模板兜底）。
+     */
+    private fun findButtonByText(vararg keywords: String): BtnHit? {
+        val root = rootInActiveWindow ?: return null
+        var best: Rect? = null
+        var bestText = ""
+        try {
+            val stack = ArrayDeque<AccessibilityNodeInfo>()
+            stack.addLast(root)
+            while (stack.isNotEmpty()) {
+                val node = stack.removeFirst()
+                val txt = node.text?.toString() ?: ""
+                val desc = node.contentDescription?.toString() ?: ""
+                val s = "$txt $desc"
+                for (kw in keywords) {
+                    if (s.contains(kw)) {
+                        val r = Rect()
+                        try { node.getBoundsInScreen(r) } catch (_: Exception) { continue }
+                        if (r.isEmpty) continue
+                        val area = r.width() * r.height()
+                        if (best == null || area < best!!.width() * best!!.height()) {
+                            best = r
+                            bestText = txt
+                        }
+                        break
+                    }
+                }
+                for (i in 0 until node.childCount) node.getChild(i)?.let { stack.addLast(it) }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "findButtonByText err", e)
+        }
+        return best?.let { BtnHit(it.centerX(), it.centerY(), bestText) }
+    }
+
+    /** 套用「点击修正偏移」（兜底微调用，默认 0） */
+    private fun applyTapFix(p: Point): Point =
+        Point(p.x + prefs.getTapFixDx(), p.y + prefs.getTapFixDy())
 
     /**
      * 实时重新定位最近盗匪：重新扫描屏幕、范围过滤、取离中心最近者。
@@ -1229,7 +1280,8 @@ class BanditAccessibilityService : AccessibilityService() {
                     stage = ST_ATTACK
                     stageTry = 0
                     stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
-                    hideBanditMarker()
+                    // 绿标持续跟随盗匪（不再隐藏），攻击全流程都看得见
+                    showBanditMarker(tx, ty, "已选中")
                     handler.postDelayed({ stageAttack() }, stepDelay())
                 } else if (attempt < 3) {
                     updateOverlayStatus("选中失败·重试${attempt + 1}(盗匪移动)")
@@ -2268,8 +2320,6 @@ class BanditAccessibilityService : AccessibilityService() {
 
     private fun stageAttack() {
         if (!running) return
-        // 进入攻击/菜单识别阶段，隐藏绿圈标记（避免被录屏截到、干扰按钮颜色识别）
-        hideBanditMarker()
         // 选中锚点：点盗匪时的落点（放射菜单以该点为中心展开）。
         // 盗匪实时移动，菜单可能跟随它移动，故优先用落点、检测不到再退回实时重定位的盗匪位置。
         val anchor = resolveMenuAnchor() ?: lastBandit
@@ -2278,15 +2328,20 @@ class BanditAccessibilityService : AccessibilityService() {
             handler.postDelayed({ stageFind() }, 500)
             return
         }
+        // 绿标持续跟随盗匪（文字识别坐标与横竖屏无关，天然准确）
+        showBanditMarker(bandit.x, bandit.y, "盗匪")
         if (anchor != null) { selAnchorX = anchor.x; selAnchorY = anchor.y }
         val wantBattle = prefs.getAttackMode() == 1
         val label = if (wantBattle) "战斗" else "讨伐"
+        val keyword = if (wantBattle) "战斗" else "讨伐"
         val exp = if (wantBattle) expectedBattlePos(bandit) else expectedAttackPos(bandit)
 
-        // 0) 已「锁定盗匪」或校准实测过按钮偏移：直接按实测位置点，最准最稳（不走颜色扫描）
-        if (prefs.hasBtnOffsets()) {
-            updateOverlayStatus("按实测偏移点$label @(${exp.x},${exp.y})")
-            dispatchTap(exp.x, exp.y) { afterAttack(label) }
+        // 0) 文字节点识别优先（与截图横竖屏旋转无关，最稳）：直接找「讨伐/战斗」按钮点
+        val tBtn = findButtonByText(keyword)
+        if (tBtn != null) {
+            val p = applyTapFix(Point(tBtn.x, tBtn.y))
+            updateOverlayStatus("文字命中$label @(${p.x},${p.y}) · 点它")
+            dispatchTap(p.x, p.y) { afterAttack(label) }
             return
         }
 
@@ -2306,9 +2361,10 @@ class BanditAccessibilityService : AccessibilityService() {
             attemptAttackButton(btns, 0, bandit, label)
             return
         }
-        // 3) 兜底：直接点几何推算位置（试探，不拉黑）
+        // 3) 兜底：直接点几何推算位置（试探，不拉黑）；套用点击修正偏移以防个别机型仍差几像素
         if (stageTry >= 2) {
-            dispatchTap(exp.x, exp.y) { afterAttack(label) }
+            val p = applyTapFix(exp)
+            dispatchTap(p.x, p.y) { afterAttack(label) }
             return
         }
         stageTry++
@@ -2442,8 +2498,24 @@ class BanditAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 模式二：点「全选」
+        // 模式二：点「全选」（文字识别优先，命中直接用；识别不到再走下面原有颜色逻辑兜底）
         if (!manualTroopMode() && prefs.isSelectAllOn()) {
+            val sel = findButtonByText("全选")
+            if (sel != null) {
+                if (selectTries >= 3) { afterSelect(); return }
+                selectTries++
+                val p = applyTapFix(Point(sel.x, sel.y))
+                updateOverlayStatus("文字命中全选($selectTries) @(${p.x},${p.y})")
+                dispatchTap(p.x, p.y) {
+                    if (selectOffTpl == null) {
+                        captureTemplateByColor("select_off", true, SELECT_TPL_R)
+                        selectOffTpl = loadTpl("select_off")
+                    }
+                    handler.postDelayed({ stageSelect() }, 500)
+                }
+                return
+            }
+            // 没识别到「全选」文字 → 走原有颜色逻辑（含 state==2 已全选判断）
             if (state == 2) {
                 // 已经是「不选」= 全部选好了，不用再点
                 updateOverlayStatus("已全选 · 点确定")
@@ -2509,6 +2581,19 @@ class BanditAccessibilityService : AccessibilityService() {
 
     private fun stageConfirm() {
         if (!running) return
+        // 文字节点识别「确定」按钮优先（与横竖屏旋转无关，最稳）
+        val conf = findButtonByText("确定")
+        if (conf != null) {
+            val p = applyTapFix(Point(conf.x, conf.y))
+            updateOverlayStatus("文字命中确定 @(${p.x},${p.y}) · 出征")
+            dispatchTap(p.x, p.y) {
+                updateNotif("已出征，等待战斗结束")
+                updateOverlayStatus("已出征 · 等战斗")
+                stage = ST_WAIT
+                handler.postDelayed({ stageWait() }, humanDelay(battleWaitMs))
+            }
+            return
+        }
         val orange = findOrangeButton()
         if (orange != null) {
             if (confirmTpl == null) {

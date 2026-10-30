@@ -140,6 +140,18 @@ class Prefs(context: Context) {
     fun getAttackMode(): Int = sp.getInt("attack_mode", 0)
     fun setAttackMode(v: Int) = sp.edit().putInt("attack_mode", v).apply()
 
+    // ---------------- 点击修正偏移（兜底微调，默认 0） ----------------
+    // 文字识别已能消除绝大多数偏移；若个别机型径向菜单/全选/确定按钮仍差几像素，
+    // 可在此方向性微调（屏幕坐标：右为 +x，下为 +y）。
+
+    /** 讨伐/战斗按钮点击的 X 修正（像素，默认 0） */
+    fun getTapFixDx(): Int = sp.getInt("tap_fix_dx", 0)
+    fun setTapFixDx(v: Int) = sp.edit().putInt("tap_fix_dx", v.coerceIn(-60, 60)).apply()
+
+    /** 讨伐/战斗按钮点击的 Y 修正（像素，默认 0） */
+    fun getTapFixDy(): Int = sp.getInt("tap_fix_dy", 0)
+    fun setTapFixDy(v: Int) = sp.edit().putInt("tap_fix_dy", v.coerceIn(-60, 60)).apply()
+
     // ---------------- 活动时段（盗匪是限时活动） ----------------
 
     /** 活动开始时间（当天 0 点起的分钟数），-1 表示不限制 */
