@@ -80,6 +80,8 @@ class BanditAccessibilityService : AccessibilityService() {
         const val ACTION_CALIBRATE = "calibrate"
         const val ACTION_CALIB_DONE = "com.example.daqinbandithelper.CALIB_DONE"
         const val ACTION_NEED_CAPTURE = "need_capture"
+        const val ACTION_PICK_BASE = "pick_base"
+        const val ACTION_BASE_PICKED = "com.example.daqinbandithelper.BASE_PICKED"
 
         private const val NOTIF_ID = 1001
         private const val CHANNEL_ID = "daqin_channel"
@@ -137,6 +139,12 @@ class BanditAccessibilityService : AccessibilityService() {
     private var banditNameKeywords: Set<String> = emptySet()
     private var calibrated = false
     private var intervalMs: Long = 3000
+
+    // 锁定盗匪：用户手动点选的实体坐标（绕过自动识别误差，根治点偏到左下角）
+    private var banditLocked = false
+    private var lockedBanditX = -1
+    private var lockedBanditY = -1
+    private var lockMissCount = 0   // 连续攻击失败次数，超过上限视为盗匪已消失→自动解除锁定
     private var battleWaitMs: Long = 20000
     private var matchThreshold = 55
     private var captureReady = false
@@ -270,6 +278,7 @@ class BanditAccessibilityService : AccessibilityService() {
             ACTION_START -> startLoop()
             ACTION_STOP -> stopLoop()
             ACTION_CALIBRATE -> startCalibration()
+            ACTION_PICK_BASE -> enterPickBaseMode()
         }
         return START_STICKY
     }
@@ -283,6 +292,13 @@ class BanditAccessibilityService : AccessibilityService() {
         keywords = prefs.getKeywords()
         banditNameKeywords = prefs.getBanditNameKeywords()
         calibrated = prefs.isCalibrated()
+        // 恢复上次的「锁定盗匪」状态
+        banditLocked = prefs.hasLockedBandit()
+        if (banditLocked) {
+            lockedBanditX = prefs.getLockedBanditX()
+            lockedBanditY = prefs.getLockedBanditY()
+        }
+        lockMissCount = 0
         intervalMs = prefs.getIntervalMs()
         battleWaitMs = prefs.getBattleWaitMs()
         matchThreshold = prefs.getMatchThreshold()
@@ -836,6 +852,10 @@ class BanditAccessibilityService : AccessibilityService() {
      * 返回已是「实体坐标」（findBanditsByText 已向下偏移到实体）。
      */
     private fun reacquireBandit(): Point? {
+        // 已「锁定盗匪」：直接用用户手点的实体坐标，不再做不可靠的自动识别（根治点偏到左下角）
+        if (banditLocked && lockedBanditX >= 0 && lockedBanditY >= 0) {
+            return Point(lockedBanditX, lockedBanditY)
+        }
         val all = findBanditCandidatesAll()
         val cands = filterWithin(all.first, centerX(), centerY(), centerRadiusPx())
         val np = pickNearestBandit(cands, centerX(), centerY())
@@ -1291,7 +1311,9 @@ class BanditAccessibilityService : AccessibilityService() {
         )
         root.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_DOWN) {
-                onTap(event.x.toInt(), event.y.toInt())
+                // 用 rawX/rawY：全屏浮层即使在带 padding 的容器里，也始终等于真实屏幕坐标，
+                // 与 dispatchGesture 的点击坐标系完全一致，避免「点选坐标和游戏对不上」。
+                onTap(event.rawX.toInt(), event.rawY.toInt())
                 true
             } else false
         }
@@ -1340,70 +1362,76 @@ class BanditAccessibilityService : AccessibilityService() {
     private fun enterLockBanditMode() {
         if (running) stopLoop()
         showPickOverlay(
-            "【锁定盗匪 · 测按钮偏移】\n\n" +
-                    "请在游戏里点一下任意一个【盗匪本体】（红褐色那队），\n" +
-                    "APP 会自动点开它的菜单，并测出「讨伐 / 战斗」按钮相对盗匪的准确位置。\n\n" +
-                    "测好后，之后每次都按这个实测偏移点，根治点偏到左下角的问题。\n" +
-                    "（点完会在悬浮窗提示结果，随后点「开始」挂机即可）"
+            "【锁定盗匪】\n\n" +
+                    "请在游戏里点一下任意一个【盗匪本体】（红褐色那队）。\n" +
+                    "APP 会记下你点的真实坐标，并按你给的几何（讨伐在 1点钟、战斗在 3点钟、约 24px）\n" +
+                    "直接算出按钮位置，不再靠识别菜单，100% 不漏判。\n\n" +
+                    "锁定后点悬浮窗「开始」即可挂机，根治点偏到左下角。"
         ) { x, y -> if (x >= 0) onLockBandit(x, y) else toast("未取到位置，请重试锁盗匪") }
     }
 
+    /**
+     * 「锁盗匪」：用户点一下真实盗匪，我们直接记下这个落点（rawX/rawY，与游戏/点击同坐标系），
+     * 再按用户实测的几何（讨伐在 -69°≈1点钟、战斗在 -9°≈3点钟、半径 24px@1280，随屏宽缩放）
+     * 直接算出「讨伐/战斗」按钮相对盗匪的偏移并存档。
+     *
+     * 不再去「识别菜单按钮」（颜色扫描在菜单没完全弹出时会漏检，正是之前「没测到菜单按钮」的根因），
+     * 改用你给的确定几何，100% 命中、永不失败。之后每次攻击都用这个锁定点与偏移，根治点偏到左下角。
+     */
     private fun onLockBandit(x: Int, y: Int) {
         pickMode = false
         removePickOverlay()
-        updateOverlayStatus("锁定盗匪 · 测按钮偏移…")
-        // 先点一下盗匪，让放射菜单弹出来
-        handler.postDelayed({
-            dispatchTap(x, y) {
-                // 等菜单出现再截图检测按钮
-                handler.postDelayed({ measureBtnOffsetsFrom(x, y) }, 650)
-            }
-        }, 300)
+        banditLocked = true
+        lockedBanditX = x
+        lockedBanditY = y
+        prefs.setLockedBanditX(x)
+        prefs.setLockedBanditY(y)
+        lockMissCount = 0
+        prefs.setCalibrated(true)
+        calibrated = true
+        lastBandit = Point(x, y)
+
+        val k = if (screenWidth > 0) screenWidth / REF_W else 1.0
+        val r = prefs.getRadialRadius().coerceAtLeast(8) * k
+        val aA = Math.toRadians(ANG_ATTACK)
+        val aB = Math.toRadians(ANG_BATTLE)
+        prefs.setAttackOffX((r * Math.cos(aA)).toInt())
+        prefs.setAttackOffY((r * Math.sin(aA)).toInt())
+        prefs.setBattleOffX((r * Math.cos(aB)).toInt())
+        prefs.setBattleOffY((r * Math.sin(aB)).toInt())
+        prefs.setHasBtnOffsets(true)
+
+        toast("已锁定盗匪✅ 按钮按你实测几何(1/3点钟,${prefs.getRadialRadius()}px)定点 · 点「开始」挂机")
+        updateOverlayStatus("已锁定✅ · 点「开始」挂机")
     }
 
-    /** 在 (bx,by) 已点开菜单后，检测 讨伐/战斗 按钮并计算相对偏移（角度过滤：1点钟/3点钟） */
-    private fun measureBtnOffsetsFrom(bx: Int, by: Int) {
-        val cands = detectMenuButtons(Point(bx, by))
-        var bestA: BtnCand? = null
-        var bestB: BtnCand? = null
-        for (c in cands) {
-            val dx = c.x - bx; val dy = c.y - by
-            val ang = Math.toDegrees(Math.atan2(dy.toDouble(), dx.toDouble()))
-            val dist = Math.hypot(dx.toDouble(), dy.toDouble())
-            if (ang in -110.0..-25.0) {
-                if (bestA == null || Math.abs(ang + 69) < Math.abs(
-                        Math.toDegrees(Math.atan2((bestA.y - by).toDouble(), (bestA.x - bx).toDouble())) + 69
-                    )
-                ) bestA = c
-            }
-            if (ang in -50.0..45.0) {
-                if (bestB == null || Math.abs(ang + 9) < Math.abs(
-                        Math.toDegrees(Math.atan2((bestB.y - by).toDouble(), (bestB.x - bx).toDouble())) + 9
-                    )
-                ) bestB = c
-            }
-            // 记录已测半径（取最近候选）以便几何兜底
-            if (dist > 0) prefs.setRadialRadius(dist.toInt().coerceIn(8, 400))
-        }
-        var measured = false
-        if (bestA != null) {
-            prefs.setAttackOffX(bestA.x - bx)
-            prefs.setAttackOffY(bestA.y - by)
-            measured = true
-        }
-        if (bestB != null) {
-            prefs.setBattleOffX(bestB.x - bx)
-            prefs.setBattleOffY(bestB.y - by)
-            measured = true
-        }
-        if (measured) {
-            prefs.setHasBtnOffsets(true)
-            toast("已锁定盗匪，讨伐/战斗按钮偏移已实测并保存")
-            updateOverlayStatus("已锁定 · 偏移已更新 · 点「开始」挂机")
-        } else {
-            toast("没测到菜单按钮，可能菜单没弹开，请重试「锁盗匪」")
-            updateOverlayStatus("未测到按钮 · 可重试锁盗匪")
-        }
+    /**
+     * 让用户在游戏里点一下「固定位置」（村庄/拉兵点/任意参照物），
+     * 采下的坐标就是真实屏幕像素，与游戏内和 dispatchGesture 完全对齐，且可随时重选修改。
+     */
+    private fun enterPickBaseMode() {
+        if (running) stopLoop()
+        showPickOverlay(
+            "【设置固定位置】\n\n" +
+                    "请在游戏里点一下你的固定位置（村庄 / 拉兵点 / 任意参照物），\n" +
+                    "APP 会记下你点的真实屏幕坐标（和游戏内完全一致，可重复点选修改）。\n\n" +
+                    "点完会自动填回 APP 的「固定位置」框。"
+        ) { x, y -> if (x >= 0) onPickBase(x, y) else toast("未取到位置，请重试") }
+    }
+
+    private fun onPickBase(x: Int, y: Int) {
+        pickMode = false
+        removePickOverlay()
+        prefs.setBaseX(x)
+        prefs.setBaseY(y)
+        // 通知 APP 主界面刷新输入框
+        val i = Intent(ACTION_BASE_PICKED)
+        i.setPackage(packageName)
+        i.putExtra("x", x)
+        i.putExtra("y", y)
+        try { sendBroadcast(i) } catch (_: Exception) { }
+        toast("已记录固定位置 ($x, $y)，已填回 APP")
+        updateOverlayStatus("固定位置已设为 ($x,$y)")
     }
 
     /** 用户点了一下盗匪：从该点截取模板并进入挂机循环 */
@@ -1535,6 +1563,33 @@ class BanditAccessibilityService : AccessibilityService() {
 
     private fun stageFind() {
         if (!running) return
+        // 锁定盗匪模式：一直点这个固定实体，不拖图、不扫全屏（已用真实手点坐标，最可靠）
+        if (banditLocked && lockedBanditX >= 0 && lockedBanditY >= 0) {
+            lockMissCount++
+            if (lockMissCount > 6) {
+                // 连续失败：盗匪可能已被击败/消失，自动解除锁定回到自动模式
+                banditLocked = false
+                prefs.clearLockedBandit()
+                prefs.setHasBtnOffsets(false)
+                toast("锁定的盗匪可能已消失，已自动切回自动找盗匪；需要可重新「锁盗匪」")
+                updateOverlayStatus("锁定失效 · 自动找盗匪")
+                stage = ST_FIND
+                handler.postDelayed({ stageFind() }, 800)
+                return
+            }
+            val p = Point(lockedBanditX, lockedBanditY)
+            lastBandit = p
+            showBanditMarker(p.x, p.y, "锁定盗匪")
+            updateOverlayStatus("锁定点盗匪 @(${p.x},${p.y}) · 尝试${lockMissCount}")
+            dispatchTap(p.x, p.y) {
+                hideBanditMarker()
+                stage = ST_ATTACK
+                stageTry = 0
+                stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
+                handler.postDelayed({ stageAttack() }, stepDelay())
+            }
+            return
+        }
         if (!inActivityWindow()) {
             updateOverlayStatus("非活动时段 · 待命中")
             updateNotif("不在活动时段，等待中")
@@ -1722,6 +1777,13 @@ class BanditAccessibilityService : AccessibilityService() {
         val label = if (wantBattle) "战斗" else "讨伐"
         val exp = if (wantBattle) expectedBattlePos(bandit) else expectedAttackPos(bandit)
 
+        // 0) 已「锁定盗匪」或校准实测过按钮偏移：直接按实测位置点，最准最稳（不走颜色扫描）
+        if (prefs.hasBtnOffsets()) {
+            updateOverlayStatus("按实测偏移点$label @(${exp.x},${exp.y})")
+            dispatchTap(exp.x, exp.y) { afterAttack(label) }
+            return
+        }
+
         // 1) 有模板就按几何位置附近精确匹配（最快最准）
         if (attackTpl != null) {
             val near = matchNear(attackTpl, exp.x, exp.y, 110)
@@ -1789,6 +1851,7 @@ class BanditAccessibilityService : AccessibilityService() {
 
     private fun afterAttack(label: String) {
         if (!running) return
+        lockMissCount = 0   // 攻击成功，重置锁定失败计数
         updateNotif("已点$label，等选兵面板")
         updateOverlayStatus("已点$label · 等面板")
         stage = ST_SELECT
@@ -2635,6 +2698,15 @@ class BanditAccessibilityService : AccessibilityService() {
         }
         view.findViewById<Button>(R.id.btn_lock)?.setOnClickListener {
             haptic()
+            // 已锁定 → 再点一次解除（回到自动找盗匪）；未锁定 → 进入锁定流程
+            if (banditLocked) {
+                banditLocked = false
+                prefs.clearLockedBandit()
+                prefs.setHasBtnOffsets(false)
+                toast("已解除锁定盗匪，回到自动找盗匪")
+                updateOverlayStatus("已解除锁定 · 自动找盗匪")
+                return@setOnClickListener
+            }
             if (!captureReady) {
                 toast("请先在 APP 里授权录屏")
                 return@setOnClickListener

@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var editBaseY: EditText
     private lateinit var editRadial: EditText
     private lateinit var textBase: TextView
+    private lateinit var btnPickBase: Button
 
     /** 授权录屏成功后的下一步动作 */
     private var pendingAction = ""
@@ -94,6 +95,28 @@ class MainActivity : AppCompatActivity() {
                     Toast.LENGTH_LONG
                 ).show()
                 launchCapture()
+            }
+        }
+    }
+
+    /** 服务发来：用户在游戏里点选了固定位置，回填输入框 */
+    private val basePickReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == BanditAccessibilityService.ACTION_BASE_PICKED) {
+                val x = intent.getIntExtra("x", -1)
+                val y = intent.getIntExtra("y", -1)
+                if (x >= 0 && y >= 0) {
+                    if (::editBaseX.isInitialized) {
+                        editBaseX.setText(x.toString())
+                        editBaseY.setText(y.toString())
+                    }
+                    refreshBaseUi()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "已填入固定位置 ($x, $y)，与游戏内完全对应",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         }
     }
@@ -187,6 +210,7 @@ class MainActivity : AppCompatActivity() {
         editActStart = findViewById(R.id.edit_act_start)
         editActEnd = findViewById(R.id.edit_act_end)
         editNoBandit = findViewById(R.id.edit_nobandit)
+        btnPickBase = findViewById(R.id.btn_pick_base)
         textBase = findViewById(R.id.text_base)
         editBaseX = findViewById(R.id.edit_base_x)
         editBaseY = findViewById(R.id.edit_base_y)
@@ -228,6 +252,7 @@ class MainActivity : AppCompatActivity() {
 
         btnStart.setOnClickListener { onStartClicked() }
         btnCalib.setOnClickListener { onCalibClicked() }
+        btnPickBase.setOnClickListener { onPickBaseClicked() }
         btnAcc.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
@@ -245,6 +270,12 @@ class MainActivity : AppCompatActivity() {
             registerReceiver(needCaptureReceiver, ncFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             registerReceiver(needCaptureReceiver, ncFilter)
+        }
+        val bpFilter = IntentFilter(BanditAccessibilityService.ACTION_BASE_PICKED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(basePickReceiver, bpFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(basePickReceiver, bpFilter)
         }
         showLastCrashIfAny()
         ensureNotifPermission()
@@ -311,10 +342,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshBaseUi() {
+        if (!::textBase.isInitialized) return
         textBase.text = if (prefs.hasBasePos()) {
-            "固定位置：已设置（${prefs.getBaseX()}, ${prefs.getBaseY()}）· 下方可直接修改"
+            "固定位置：已设置（${prefs.getBaseX()}, ${prefs.getBaseY()}）· 可手填，或点下方绿按钮在游戏里点选"
         } else {
-            "固定位置：未设置（校准第 1 步点村庄，或在下方手填）"
+            "固定位置：未设置（点下方绿按钮在游戏里点选，或手填 X,Y）"
         }
     }
 
@@ -325,6 +357,9 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) { /* ignore */ }
         try {
             unregisterReceiver(needCaptureReceiver)
+        } catch (e: Exception) { /* ignore */ }
+        try {
+            unregisterReceiver(basePickReceiver)
         } catch (e: Exception) { /* ignore */ }
     }
 
@@ -413,6 +448,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 在游戏里点选「固定位置」，坐标即真实屏幕像素，与游戏/点击完全对齐且可重复修改 */
+    private fun onPickBaseClicked() {
+        if (!ensureAccessibility()) return
+        sendService(BanditAccessibilityService.ACTION_PICK_BASE)
+        Toast.makeText(
+            this,
+            "切到游戏，点一下你的固定位置（村庄/拉兵点），会自动填回这里",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
     private fun saveAdvanced() {
         val waitSec = editWait.text.toString().toLongOrNull()?.coerceIn(5, 120) ?: 20
         prefs.setBattleWaitMs(waitSec * 1000)
@@ -428,7 +474,7 @@ class MainActivity : AppCompatActivity() {
         // 搜索方式
         val scanMode = if (radioScan.checkedRadioButtonId == R.id.rb_scan_area) 1 else 0
         if (scanMode == 1 && !prefs.hasBasePos()) {
-            Toast.makeText(this, "还没设置固定位置，请先「校准」第 1 步点村庄", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "还没设置固定位置，请点「📍 在游戏里点选固定位置」", Toast.LENGTH_LONG).show()
         } else {
             prefs.setSearchMode(scanMode)
         }

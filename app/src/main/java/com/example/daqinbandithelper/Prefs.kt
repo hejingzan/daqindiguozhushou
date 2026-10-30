@@ -166,6 +166,22 @@ class Prefs(context: Context) {
 
     fun clearBasePos() = sp.edit().putInt("base_x", -1).putInt("base_y", -1).apply()
 
+    // ---------------- 锁定盗匪（用户手动点选的实体坐标，最可靠） ----------------
+
+    /**
+     * 用户点「锁盗匪」后手动点选的盗匪实体屏幕坐标。
+     * 这是最可靠的坐标来源：直接来自用户手指的落点（rawX/rawY，与 dispatchGesture 同一坐标系），
+     * 不再依赖颜色/名字识别，从根本上避免「点偏到左下角」。
+     */
+    fun getLockedBanditX(): Int = sp.getInt("locked_bandit_x", -1)
+    fun setLockedBanditX(v: Int) = sp.edit().putInt("locked_bandit_x", v).apply()
+
+    fun getLockedBanditY(): Int = sp.getInt("locked_bandit_y", -1)
+    fun setLockedBanditY(v: Int) = sp.edit().putInt("locked_bandit_y", v).apply()
+
+    fun hasLockedBandit(): Boolean = getLockedBanditX() >= 0 && getLockedBanditY() >= 0
+    fun clearLockedBandit() = sp.edit().putInt("locked_bandit_x", -1).putInt("locked_bandit_y", -1).apply()
+
     // ---------------- 盗匪等级筛选 ----------------
 
     /** 等级标签相对盗匪图标的偏移（校准时记录） */

@@ -80,7 +80,7 @@
         android:layout_width="match_parent"
         android:layout_height="32dp"
         android:layout_marginTop="3dp"
-        android:text="🔒 锁盗匪(测按钮偏移)"
+        android:text="🔒 锁盗匪(再点解除)"
         android:textSize="12sp"
         android:textStyle="bold"
         android:padding="0dp"
