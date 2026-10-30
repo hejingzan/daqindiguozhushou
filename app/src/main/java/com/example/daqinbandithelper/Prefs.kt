@@ -109,6 +109,17 @@ class Prefs(context: Context) {
     fun hasBtnOffsets(): Boolean = sp.getBoolean("btn_off_measured", false)
     fun setHasBtnOffsets(v: Boolean) = sp.edit().putBoolean("btn_off_measured", v).apply()
 
+    /** 清空按钮偏移与「已实测」标记（横竖屏旋转校正后调用，避免旧竖屏偏移在新横屏下错位） */
+    fun clearBtnOffsets() {
+        sp.edit()
+            .putBoolean("btn_off_measured", false)
+            .putInt("attack_off_x", 0)
+            .putInt("attack_off_y", 0)
+            .putInt("battle_off_x", 0)
+            .putInt("battle_off_y", 0)
+            .apply()
+    }
+
     /** 讨伐按钮相对盗匪图标的偏移（校准时记录，比几何推算更准） */
     fun getAttackOffX(): Int = sp.getInt("attack_off_x", 0)
     fun setAttackOffX(v: Int) = sp.edit().putInt("attack_off_x", v).apply()

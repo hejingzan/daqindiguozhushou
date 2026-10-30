@@ -15,6 +15,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
@@ -196,6 +197,9 @@ class BanditAccessibilityService : AccessibilityService() {
     private var screenWidth = 0
     private var screenHeight = 0
     private var screenDensity = 0
+    private var displayRotation = Surface.ROTATION_0   // 当前显示旋转方向
+    private var captureRotated = false                 // 本帧截图是否做了横竖屏旋转校正
+    private var rotationTemplatesCleared = false       // 旋转校正后是否清理过旧(竖屏)模板
 
     // 浮层
     private var windowManager: WindowManager? = null
@@ -406,31 +410,11 @@ class BanditAccessibilityService : AccessibilityService() {
             Log.e(TAG, "registerCallback failed", e)
         }
 
-        val metrics = DisplayMetrics()
-        val display = windowManager?.defaultDisplay
-        if (display != null) {
-            display.getRealMetrics(metrics)
-        } else {
-            val dm = resources.displayMetrics
-            metrics.widthPixels = dm.widthPixels
-            metrics.heightPixels = dm.heightPixels
-            metrics.densityDpi = dm.densityDpi
-        }
-        // 横屏适配：录屏缓冲必须与「真实显示方向」一致，否则截图坐标和 dispatchGesture
-        // 的屏幕坐标对不上（典型现象就是「总是点左下角」）。
-        // 若当前是横屏（旋转 90/270）却取到 宽<高，则交换，保证 宽>高。
-        var capW = metrics.widthPixels
-        var capH = metrics.heightPixels
-        val rot = display?.rotation ?: Surface.ROTATION_0
-        val landscape = (rot == Surface.ROTATION_90 || rot == Surface.ROTATION_270)
-        if (landscape && capW < capH) {
-            val t = capW; capW = capH; capH = t
-        }
-        screenWidth = capW
-        screenHeight = capH
-        screenDensity = metrics.densityDpi
+        // 横竖屏适配：录屏缓冲必须与「真实显示方向」一致，否则截图坐标和 dispatchGesture
+        // 的屏幕坐标对不上（典型现象就是「总是点左下角 / 绿标只出现在左半边」）。
+        refreshDisplayMetrics()
 
-        Log.i(TAG, "capture sized ${screenWidth}x${screenHeight} rotation=$rot landscape=$landscape density=$screenDensity")
+        Log.i(TAG, "capture sized ${screenWidth}x${screenHeight} rotation=$displayRotation density=$screenDensity")
 
         try {
             imageReader = ImageReader.newInstance(
@@ -468,6 +452,63 @@ class BanditAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun readDisplayRotation(): Int {
+        return try {
+            windowManager?.defaultDisplay?.rotation ?: Surface.ROTATION_0
+        } catch (e: Exception) {
+            Surface.ROTATION_0
+        }
+    }
+
+    /**
+     * 按「真实显示方向」刷新屏幕尺寸：
+     * - 横屏时强制 宽 > 高（杜绝系统按竖屏出图导致 screenWidth 被设成较小值，
+     *   进而所有坐标被压在左半边、绿标不跟随）；
+     * - 记录当前旋转方向，供 captureBitmap 做截图方向校正。
+     */
+    private fun refreshDisplayMetrics() {
+        displayRotation = readDisplayRotation()
+        val metrics = DisplayMetrics()
+        val display = windowManager?.defaultDisplay
+        if (display != null) {
+            display.getRealMetrics(metrics)
+        } else {
+            val dm = resources.displayMetrics
+            metrics.widthPixels = dm.widthPixels
+            metrics.heightPixels = dm.heightPixels
+            metrics.densityDpi = dm.densityDpi
+        }
+        var w = metrics.widthPixels
+        var h = metrics.heightPixels
+        val landByRot = (displayRotation == Surface.ROTATION_90
+                || displayRotation == Surface.ROTATION_270)
+        if (landByRot && w < h) {
+            // 横屏却被给成竖屏尺寸 → 交换
+            val t = w; w = h; h = t
+        } else if (!landByRot && w > h) {
+            // 竖屏却被给成横屏尺寸 → 交换
+            val t = w; w = h; h = t
+        }
+        screenWidth = w
+        screenHeight = h
+        screenDensity = metrics.densityDpi
+    }
+
+    /** 清理旧的竖屏模板（旋转校正后调用一次，避免残留模板与当前横屏尺寸不匹配） */
+    private fun clearStaleTemplatesOnce() {
+        if (rotationTemplatesCleared) return
+        rotationTemplatesCleared = true
+        val names = listOf(
+            "bandit", "bandit_core", "attack", "battle",
+            "select", "select_off", "confirm", "base", "level"
+        )
+        for (n in names) {
+            try { prefs.tplFile(n).delete() } catch (e: Exception) { /* ignore */ }
+        }
+        prefs.clearBtnOffsets()
+        Log.i(TAG, "cleared stale templates due to orientation correction")
+    }
+
     private fun captureBitmap(): Bitmap? {
         val reader = imageReader ?: return null
         val image = try {
@@ -475,8 +516,6 @@ class BanditAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             null
         } ?: return null
-        // 以截图真实尺寸为准校正屏幕坐标，保证「检测坐标」与「点击坐标」始终同一空间。
-        // （横屏时系统给的 metrics 偶尔是竖屏尺寸，会导致两者偏差 → 点错位置）
         val iw = image.width
         val ih = image.height
         if (iw <= 0 || ih <= 0) { image.close(); return null }
@@ -489,15 +528,41 @@ class BanditAccessibilityService : AccessibilityService() {
         val full = Bitmap.createBitmap(w, ih, Bitmap.Config.ARGB_8888)
         full.copyPixelsFromBuffer(buffer)
         image.close()
-        if (iw != screenWidth || ih != screenHeight) {
-            screenWidth = iw
-            screenHeight = ih
+        val cropped = Bitmap.createBitmap(full, 0, 0, iw, ih)
+        full.recycle()
+
+        // 横竖屏对齐：MediaProjection 在很多机型（尤其华为 EMUI）上会按「设备自然方向」出图
+        // （竖屏 1080x1920），而真机游戏是横屏（1920x1080）。若不校正，所有检测坐标都被压在
+        // 横屏左半边、绿标不跟随、点击点空。这里把截图旋转到与「当前显示方向」一致，
+        // 使 检测坐标 == 点击坐标(dispatchGesture) == 浮层坐标(windowManager) 三者统一。
+        displayRotation = readDisplayRotation()
+        val dispLand =
+            displayRotation == Surface.ROTATION_90 || displayRotation == Surface.ROTATION_270
+        val imgLand = iw > ih
+        var result: Bitmap = cropped
+        if (imgLand != dispLand) {
+            val deg = when (displayRotation) {
+                Surface.ROTATION_90 -> 90f
+                Surface.ROTATION_270 -> 270f
+                Surface.ROTATION_180 -> 180f
+                else -> 90f   // 显示横屏但图是竖屏(rotation=0)时，也按 90° 校正
+            }
+            val m = Matrix().apply { postRotate(deg) }
+            val rb = Bitmap.createBitmap(result, 0, 0, result.width, result.height, m, true)
+            result.recycle()
+            result = rb
+            captureRotated = true
+            clearStaleTemplatesOnce()
+            Log.i(
+                TAG,
+                "capture oriented: img ${iw}x$ih deg=$deg rot=$displayRotation -> ${result.width}x${result.height}"
+            )
+        } else {
+            captureRotated = false
         }
-        return try {
-            Bitmap.createBitmap(full, 0, 0, iw, ih)
-        } finally {
-            full.recycle()
-        }
+        screenWidth = result.width
+        screenHeight = result.height
+        return result
     }
 
     /** 截取 (cx,cy) 周围 radius 区域，存为识别模板（截取前隐藏浮层以保证纯净） */
@@ -2097,7 +2162,7 @@ class BanditAccessibilityService : AccessibilityService() {
         noBanditStreak = 0
         lastBandit = live
         showBanditMarker(live.x, live.y, "锁定·跟随移动")
-        updateOverlayStatus("已定位盗匪 @(${live.x},${live.y}) · 点击(带提前量)")
+        updateOverlayStatus("已定位盗匪 @(${live.x},${live.y}) · 屏${screenWidth}x${screenHeight}·旋转$captureRotated")
         // 点击盗匪 → 校验是否弹出放射菜单 → 成功才进攻击阶段，失败重试（盗匪实时移动需跟随）
         tapBanditAndVerify(live, 0)
     }
