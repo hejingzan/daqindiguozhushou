@@ -155,6 +155,19 @@ class BanditAccessibilityService : AccessibilityService() {
     private var lockedBanditX = -1
     private var lockedBanditY = -1
     private var lockMissCount = 0   // 连续攻击失败次数，超过上限视为盗匪已消失→自动解除锁定
+
+    // —— 实时跟踪盗匪（应对「盗匪实时移动」）——
+    /** 上一帧检测到的盗匪位置与时间，用于估算移动速度 */
+    private var trackPrevX = -1
+    private var trackPrevY = -1
+    private var trackPrevT = 0L
+    /** 盗匪移动速度（像素/毫秒），指数平滑，用于点击「提前量」 */
+    private var banditVX = 0.0
+    private var banditVY = 0.0
+    /** 点盗匪时的落点（放射菜单以该点为中心展开）。成功选中后记录，供攻击按钮定位 */
+    private var selAnchorX = -1
+    private var selAnchorY = -1
+
     private var battleWaitMs: Long = 20000
     private var matchThreshold = 55
     private var captureReady = false
@@ -1000,16 +1013,155 @@ class BanditAccessibilityService : AccessibilityService() {
      * 用于「点击前 / 进攻击前」刷新坐标，使点击点跟随盗匪实时移动。
      * 返回已是「实体坐标」（findBanditsByText 已向下偏移到实体）。
      */
+    /**
+     * 实时重新定位最近盗匪：重新扫描屏幕、范围过滤、取离中心最近者。
+     * 锁定模式下改为「窗口内实时重定位」（盗匪在移动，不能用冻结坐标去点），
+     * 返回的是盗匪当前实时位置，供点击跟随。
+     */
     private fun reacquireBandit(): Point? {
-        // 已「锁定盗匪」：直接用用户手点的实体坐标，不再做不可靠的自动识别（根治点偏到左下角）
+        // 锁定模式：在「上一帧位置」窗口内实时重定位，不再用冻结坐标去点（根治点偏/点空）
         if (banditLocked && lockedBanditX >= 0 && lockedBanditY >= 0) {
-            return Point(lockedBanditX, lockedBanditY)
+            return trackLockedBandit()
         }
         val all = findBanditCandidatesAll()
         val cands = filterWithin(all.first, refX(), refY(), centerRadiusPx())
         val inRange = filterByAttackRange(cands, refX(), refY())
         val np = pickNearestBandit(inRange, refX(), refY())
         return np?.let { Point(it.x, it.y) }
+    }
+
+    /**
+     * 锁定模式下实时跟踪盗匪：盗匪在实时移动，不能用冻结坐标去点。
+     * 策略：在「上一帧位置」窗口内重定位（核心模板优先 → 颜色兜底）；窗口内找不到（跑远/被遮挡）
+     * 再退回全局找离上次锁定位置最近者。这样「锁定」= 锁定「这个盗匪的目标」而非某个像素。
+     */
+    private fun trackLockedBandit(): Point? {
+        val cx = if (trackPrevX >= 0) trackPrevX else lockedBanditX
+        val cy = if (trackPrevY >= 0) trackPrevY else lockedBanditY
+        // 1) 核心模板在窗口内匹配（最稳，唯一识别该盗匪外观）
+        if (banditCoreTpl != null) {
+            val near = matchNear(banditCoreTpl, cx, cy, 220)
+            if (near != null) return near
+        }
+        // 2) 颜色扫描窗口内找红褐色团
+        val screen = captureBitmap()
+        if (screen != null) {
+            try {
+                val hit = banditBlobIn(screen, cx - 220, cx + 220, cy - 220, cy + 220)
+                if (hit != null) return Point(hit.cx, hit.cy)
+            } finally { screen.recycle() }
+        }
+        // 3) 窗口内没找到 → 全局重找离上次锁定位置最近者
+        val (cands, _) = findBanditCandidatesAll()
+        val np = pickNearestBandit(cands, lockedBanditX, lockedBanditY)
+        return np?.let { Point(it.x, it.y) } ?: Point(lockedBanditX, lockedBanditY)
+    }
+
+    /** 更新盗匪跟踪：用上一帧位置估计移动速度（像素/毫秒），供点击提前量使用 */
+    private fun updateTrack(x: Int, y: Int) {
+        val now = System.currentTimeMillis()
+        if (trackPrevX >= 0 && trackPrevT > 0L) {
+            val dt = (now - trackPrevT).coerceIn(16L, 3000L)
+            if (dt > 0) {
+                val vx = (x - trackPrevX) / dt.toDouble()
+                val vy = (y - trackPrevY) / dt.toDouble()
+                // 指数平滑，抑制单帧抖动
+                banditVX = banditVX * 0.4 + vx * 0.6
+                banditVY = banditVY * 0.4 + vy * 0.6
+            }
+        }
+        trackPrevX = x; trackPrevY = y; trackPrevT = now
+    }
+
+    /**
+     * 点击提前量：按盗匪移动速度，把落点往「它将去的方向」推一点，
+     * 补偿「截图→识图→派发手势」这段延迟里盗匪的移动，解决「点偏/点空→选不中」。
+     */
+    private fun leadFor(now: Long): Pair<Int, Int> {
+        if (trackPrevX < 0 || trackPrevT <= 0L) return Pair(0, 0)
+        val leadMs = 220L
+        val lx = (banditVX * leadMs).toInt()
+        val ly = (banditVY * leadMs).toInt()
+        return Pair(lx.coerceIn(-80, 80), ly.coerceIn(-80, 80))
+    }
+
+    /**
+     * 解析放射菜单中心点：优先用「点盗匪的落点」（菜单通常以该点为中心展开）；
+     * 若落点处检测不到菜单（说明菜单跟随盗匪移动了），再实时重定位盗匪取其位置。
+     * 都没检测到时也退回落点（按钮较小、环形扫描会偶发漏检）。
+     */
+    private fun resolveMenuAnchor(): Point? {
+        if (selAnchorX >= 0 && selAnchorY >= 0 &&
+            detectMenuButtons(Point(selAnchorX, selAnchorY)).isNotEmpty()
+        ) return Point(selAnchorX, selAnchorY)
+        val live = reacquireBandit()
+        if (live != null && detectMenuButtons(live).isNotEmpty()) return live
+        return if (selAnchorX >= 0 && selAnchorY >= 0) Point(selAnchorX, selAnchorY) else live
+    }
+
+    /** 锁定失效：清除锁定状态并切回自动找盗匪 */
+    private fun unlockLock(reason: String) {
+        banditLocked = false
+        prefs.clearLockedBandit()
+        prefs.setHasBtnOffsets(false)
+        toast(reason)
+        updateOverlayStatus("锁定失效 · 自动找盗匪")
+        stage = ST_FIND
+        handler.postDelayed({ stageFind() }, 800)
+    }
+
+    /**
+     * 点击盗匪并校验是否真的选中（弹出放射菜单）。
+     * 盗匪实时移动：用「提前量」把落点往前推一点补偿延迟；
+     * 点完若没弹出菜单（说明没点中），重新实时定位再点，最多重试 3 次，
+     * 彻底解决「点偏/点空→选不中盗匪」。
+     */
+    private fun tapBanditAndVerify(p: Point, attempt: Int) {
+        val (lx, ly) = leadFor(System.currentTimeMillis())
+        val tx = (p.x + lx).coerceIn(2, (screenWidth - 3).coerceAtLeast(3))
+        val ty = (p.y + ly).coerceIn(2, (screenHeight - 3).coerceAtLeast(3))
+        selAnchorX = tx; selAnchorY = ty
+        updateTrack(p.x, p.y)
+        updateOverlayStatus("点盗匪 @(${tx},${ty}) · 提前量($lx,$ly)")
+        dispatchTap(tx, ty) {
+            if (!running) return@dispatchTap
+            handler.postDelayed({
+                if (!running) return@postDelayed
+                // 校验：放射菜单是否弹出（=盗匪被选中）。
+                // 菜单可能以「点击落点」为中心（跟随移动会离开落点），也可能跟随盗匪本体，
+                // 所以落点和实时重定位的盗匪位置都查一遍，命中其一即算选中。
+                var ok = false
+                if (detectMenuButtons(Point(tx, ty)).isNotEmpty()) {
+                    selAnchorX = tx; selAnchorY = ty; ok = true
+                } else {
+                    val live = reacquireBandit()
+                    if (live != null && detectMenuButtons(live).isNotEmpty()) {
+                        selAnchorX = live.x; selAnchorY = live.y; ok = true
+                    }
+                }
+                if (ok) {
+                    lockMissCount = 0
+                    stage = ST_ATTACK
+                    stageTry = 0
+                    stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
+                    hideBanditMarker()
+                    handler.postDelayed({ stageAttack() }, stepDelay())
+                } else if (attempt < 3) {
+                    updateOverlayStatus("选中失败·重试${attempt + 1}(盗匪移动)")
+                    val live = reacquireBandit()
+                    if (live != null) tapBanditAndVerify(live, attempt + 1)
+                    else { stage = ST_FIND; handler.postDelayed({ stageFind() }, 600) }
+                } else {
+                    updateOverlayStatus("选中失败·换目标")
+                    if (banditLocked) {
+                        lockMissCount++
+                        if (lockMissCount > 8) { unlockLock("锁定盗匪点不中，自动切回自动找"); return@postDelayed }
+                    }
+                    stage = ST_FIND
+                    handler.postDelayed({ stageFind() }, 600)
+                }
+            }, 300)
+        }
     }
 
     /**
@@ -1325,6 +1477,7 @@ class BanditAccessibilityService : AccessibilityService() {
         stageTry = 0
         stageDeadline = 0L
         stageEnteredAt = System.currentTimeMillis()
+        selAnchorX = -1; selAnchorY = -1
         hideBanditMarker()
         handler.postDelayed({
             recoveryPending = false
@@ -1784,6 +1937,10 @@ class BanditAccessibilityService : AccessibilityService() {
         stopGuard()
         removePickOverlay()
         hideBanditMarker()
+        // 重置实时跟踪与菜单锚点，避免残留到下次运行
+        selAnchorX = -1; selAnchorY = -1
+        trackPrevX = -1; trackPrevY = -1; trackPrevT = 0L
+        banditVX = 0.0; banditVY = 0.0
         updateNotif("已停止", false)
         setOverlayToggle(false)
         updateOverlayStatus("已停止 · 点「开始」继续")
@@ -1812,33 +1969,8 @@ class BanditAccessibilityService : AccessibilityService() {
 
     private fun stageFind() {
         if (!running) return
-        // 锁定盗匪模式：一直点这个固定实体，不拖图、不扫全屏（已用真实手点坐标，最可靠）
-        if (banditLocked && lockedBanditX >= 0 && lockedBanditY >= 0) {
-            lockMissCount++
-            if (lockMissCount > 6) {
-                // 连续失败：盗匪可能已被击败/消失，自动解除锁定回到自动模式
-                banditLocked = false
-                prefs.clearLockedBandit()
-                prefs.setHasBtnOffsets(false)
-                toast("锁定的盗匪可能已消失，已自动切回自动找盗匪；需要可重新「锁盗匪」")
-                updateOverlayStatus("锁定失效 · 自动找盗匪")
-                stage = ST_FIND
-                handler.postDelayed({ stageFind() }, 800)
-                return
-            }
-            val p = Point(lockedBanditX, lockedBanditY)
-            lastBandit = p
-            showBanditMarker(p.x, p.y, "锁定盗匪")
-            updateOverlayStatus("锁定点盗匪 @(${p.x},${p.y}) · 尝试${lockMissCount}")
-            dispatchTap(p.x, p.y) {
-                hideBanditMarker()
-                stage = ST_ATTACK
-                stageTry = 0
-                stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
-                handler.postDelayed({ stageAttack() }, stepDelay())
-            }
-            return
-        }
+        // 新的攻击锚点每轮重置；选中后才写入
+        selAnchorX = -1; selAnchorY = -1
         if (!inActivityWindow()) {
             updateOverlayStatus("非活动时段 · 待命中")
             updateNotif("不在活动时段，等待中")
@@ -1849,70 +1981,53 @@ class BanditAccessibilityService : AccessibilityService() {
             handler.postDelayed({ stageFind() }, Random.nextLong(1500, 4000))
             return
         }
-        val (candsRaw, src) = findBanditCandidatesAll()
-        val cands = filterWithin(candsRaw, refX(), refY(), centerRadiusPx())
-        // 射程过滤：只打够得着的盗匪（射程=0 时不过滤）
-        val inRange = filterByAttackRange(cands, refX(), refY())
-        val np = pickNearestBandit(inRange, refX(), refY())
-        val p = np?.let { Point(it.x, it.y) }
-        val liTxt = np?.let { "${distanceLi(it, refX(), refY()).toInt()}里" } ?: "-"
-        updateOverlayStatus(
-            "找盗匪…($src 候选${cands.size} · 射程内${inRange.size} · 最近$liTxt · ${searchModeLabel()})"
-        )
-        if (p != null && !isBlacklisted(p)) {
-            if (!levelAccept(p)) {
-                updateNotif("盗匪等级不符，继续找")
-                updateOverlayStatus("等级不符 · 继续找")
-                hideBanditMarker()
-                handler.postDelayed({ stageFind() }, humanDelay(700))
+        // 实时定位盗匪：锁定模式也会在「上一帧位置」窗口内实时重定位（盗匪实时移动）
+        val live = reacquireBandit()
+        if (live == null) {
+            hideBanditMarker()
+            missCount++
+            noBanditStreak++
+            if (banditLocked) {
+                lockMissCount++
+                if (lockMissCount > 8) { unlockLock("锁定盗匪已丢失，自动切回自动找"); return }
+            }
+            if (missCount >= 3) {
+                missCount = 0
+                if (useAreaSearch()) {
+                    advanceScan()
+                } else {
+                    updateNotif("未找到盗匪，挪动地图…")
+                    dragMap()
+                    handler.postDelayed({ stageFind() }, humanDelay(intervalMs))
+                }
                 return
             }
-            missCount = 0
-            noBanditStreak = 0
-            lastBandit = p
-            showBanditMarker(p.x, p.y, "锁定 候选${cands.size}·$src")
-            updateNotif("已锁定盗匪，点击前重新定位")
-            updateOverlayStatus("已锁定盗匪 · 准备点击(跟随移动)")
-            // 点击前再实时重新定位一次：盗匪在 1~2s 停顿期间会移动，必须跟随最新位置
-            handler.postDelayed({
-                if (!running) return@postDelayed
-                val live = reacquireBandit() ?: p
-                lastBandit = live
-                showBanditMarker(live.x, live.y, "点击盗匪")
-                updateOverlayStatus("点击盗匪 @(${live.x},${live.y})")
-                dispatchTap(live.x, live.y) {
-                    hideBanditMarker()
-                    stage = ST_ATTACK
-                    stageTry = 0
-                    stageDeadline = System.currentTimeMillis() + UI_WAIT_MS
-                    handler.postDelayed({ stageAttack() }, stepDelay())
-                }
-            }, stepDelay())
-            return
-        }
-        hideBanditMarker()
-        missCount++
-        noBanditStreak++
-        if (missCount >= 3) {
-            missCount = 0
-            if (useAreaSearch()) {
-                advanceScan()
-            } else {
-                updateNotif("未找到盗匪，挪动地图…")
-                dragMap()
-                handler.postDelayed({ stageFind() }, humanDelay(intervalMs))
+            // 长时间找不到（活动可能还没刷）→ 放慢节奏等待刷新
+            if (noBanditStreak >= 3) {
+                val waitSec = prefs.getNoBanditWaitSec().coerceIn(5, 600)
+                updateOverlayStatus("等盗匪刷新 ${waitSec}s")
+                updateNotif("没找到盗匪，等待刷新")
+                handler.postDelayed({ stageFind() }, waitSec * 1000L)
+                return
             }
+            handler.postDelayed({ stageFind() }, humanDelay(intervalMs))
             return
         }
-        // 长时间找不到（活动可能还没刷）→ 放慢节奏等待刷新
-        if (noBanditStreak >= 3) {
-            val waitSec = prefs.getNoBanditWaitSec().coerceIn(5, 600)
-            updateOverlayStatus("等盗匪刷新 ${waitSec}s")
-            updateNotif("没找到盗匪，等待刷新")
-            handler.postDelayed({ stageFind() }, waitSec * 1000L)
+        // 等级过滤
+        if (!levelAccept(live)) {
+            updateNotif("盗匪等级不符，继续找")
+            updateOverlayStatus("等级不符 · 继续找")
+            hideBanditMarker()
+            handler.postDelayed({ stageFind() }, humanDelay(700))
             return
         }
-        handler.postDelayed({ stageFind() }, humanDelay(intervalMs))
+        missCount = 0
+        noBanditStreak = 0
+        lastBandit = live
+        showBanditMarker(live.x, live.y, "锁定·跟随移动")
+        updateOverlayStatus("已定位盗匪 @(${live.x},${live.y}) · 点击(带提前量)")
+        // 点击盗匪 → 校验是否弹出放射菜单 → 成功才进攻击阶段，失败重试（盗匪实时移动需跟随）
+        tapBanditAndVerify(live, 0)
     }
 
     // —— 阶段 2：点放射菜单里的「讨伐 / 战斗」 ——
@@ -2018,15 +2133,15 @@ class BanditAccessibilityService : AccessibilityService() {
         if (!running) return
         // 进入攻击/菜单识别阶段，隐藏绿圈标记（避免被录屏截到、干扰按钮颜色识别）
         hideBanditMarker()
-        // 盗匪可能移动了，进入攻击阶段先重新定位一次，菜单扫描中心跟随最新位置
-        val live = reacquireBandit()
-        if (live != null) lastBandit = live
-        val bandit = lastBandit
-        if (bandit == null) {
+        // 选中锚点：点盗匪时的落点（放射菜单以该点为中心展开）。
+        // 盗匪实时移动，菜单可能跟随它移动，故优先用落点、检测不到再退回实时重定位的盗匪位置。
+        val anchor = resolveMenuAnchor() ?: lastBandit
+        val bandit = anchor ?: run {
             stage = ST_FIND
             handler.postDelayed({ stageFind() }, 500)
             return
         }
+        if (anchor != null) { selAnchorX = anchor.x; selAnchorY = anchor.y }
         val wantBattle = prefs.getAttackMode() == 1
         val label = if (wantBattle) "战斗" else "讨伐"
         val exp = if (wantBattle) expectedBattlePos(bandit) else expectedAttackPos(bandit)
