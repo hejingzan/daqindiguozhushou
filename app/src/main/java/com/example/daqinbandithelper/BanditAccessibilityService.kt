@@ -998,8 +998,8 @@ class BanditAccessibilityService : AccessibilityService() {
             if (hit != null) {
                 cands.add(BanditCand(hit.cx, hit.cy, 9999, hit.footY))
             } else {
-                // 没扫到像素团（可能被遮挡/动画帧）→ 退回旧的比例估算，保证不漏
-                val off = (rect.height() * 1.5 + screenHeight * prefs.getNameBodyOffsetRatio()).toInt()
+                // 没扫到像素团（被遮挡/动画帧）→ 退回「标签中心下方约 1.3 个标签高度」即实体中心，更紧贴
+                val off = (rect.height() * 1.3 + screenHeight * 0.02f).toInt()
                 val by = (rect.bottom + off).coerceIn(2, (screenHeight - 2).coerceAtLeast(3))
                 cands.add(BanditCand(bx, by, 9999))
             }
@@ -1035,15 +1035,35 @@ class BanditAccessibilityService : AccessibilityService() {
      * 策略：在「上一帧位置」窗口内重定位（核心模板优先 → 颜色兜底）；窗口内找不到（跑远/被遮挡）
      * 再退回全局找离上次锁定位置最近者。这样「锁定」= 锁定「这个盗匪的目标」而非某个像素。
      */
+    /**
+     * 锁定模式下实时跟踪盗匪：盗匪在实时移动，不能用冻结坐标去点。
+     * 主策略改为【无障碍文字节点定位优先】：盗匪头顶的「盗匪-XXX」名字标签是结构化节点，
+     * 天然跟着实体移动，比模板/颜色扫描稳得多，且对移动完全不敏感。
+     * 读不到文字（极少数画面）才退回核心模板/颜色窗口扫描兜底。
+     */
     private fun trackLockedBandit(): Point? {
+        // 1) 文字节点定位：所有「盗匪」名字标签 → 取离上次锁定位置最近者（即同一个盗匪）
+        val scr = captureBitmap()
+        if (scr != null) {
+            try {
+                val byText = findBanditsByText(scr)
+                if (byText.isNotEmpty()) {
+                    val np = pickNearestBandit(byText, lockedBanditX, lockedBanditY)
+                    if (np != null) {
+                        updateOverlayStatus("锁定·文字跟踪 @(${np.x},${np.y})")
+                        return Point(np.x, np.y)
+                    }
+                }
+            } finally { scr.recycle() }
+        }
+        // 2) 文字读不到 → 核心模板在窗口内匹配（最稳，唯一识别该盗匪外观）
         val cx = if (trackPrevX >= 0) trackPrevX else lockedBanditX
         val cy = if (trackPrevY >= 0) trackPrevY else lockedBanditY
-        // 1) 核心模板在窗口内匹配（最稳，唯一识别该盗匪外观）
         if (banditCoreTpl != null) {
             val near = matchNear(banditCoreTpl, cx, cy, 220)
             if (near != null) return near
         }
-        // 2) 颜色扫描窗口内找红褐色团
+        // 3) 颜色扫描窗口内找红褐色团
         val screen = captureBitmap()
         if (screen != null) {
             try {
@@ -1051,7 +1071,7 @@ class BanditAccessibilityService : AccessibilityService() {
                 if (hit != null) return Point(hit.cx, hit.cy)
             } finally { screen.recycle() }
         }
-        // 3) 窗口内没找到 → 全局重找离上次锁定位置最近者
+        // 4) 窗口内没找到 → 全局重找离上次锁定位置最近者
         val (cands, _) = findBanditCandidatesAll()
         val np = pickNearestBandit(cands, lockedBanditX, lockedBanditY)
         return np?.let { Point(it.x, it.y) } ?: Point(lockedBanditX, lockedBanditY)
