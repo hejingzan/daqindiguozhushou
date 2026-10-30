@@ -97,6 +97,18 @@ class Prefs(context: Context) {
 
     // ---------------- 放射菜单（讨伐 / 战斗）相对盗匪的偏移 ----------------
 
+    /**
+     * 放射菜单半径（像素 @ REF_W=1280 宽）。即「点盗匪后，讨伐/战斗按钮离盗匪多远」。
+     * 不同手机/游戏 UI 缩放下数值不同；「锁定盗匪」实测后会直接覆盖偏移量，此值仅作几何兜底。
+     * 默认 24，可在 APP「高级设置」里改（用户实测约 24px@1280）。
+     */
+    fun getRadialRadius(): Int = sp.getInt("radial_radius", 24)
+    fun setRadialRadius(v: Int) = sp.edit().putInt("radial_radius", v.coerceIn(8, 400)).apply()
+
+    /** 是否通过「锁定盗匪」或校准实测过 讨伐/战斗 按钮相对盗匪的偏移（比几何推测更准） */
+    fun hasBtnOffsets(): Boolean = sp.getBoolean("btn_off_measured", false)
+    fun setHasBtnOffsets(v: Boolean) = sp.edit().putBoolean("btn_off_measured", v).apply()
+
     /** 讨伐按钮相对盗匪图标的偏移（校准时记录，比几何推算更准） */
     fun getAttackOffX(): Int = sp.getInt("attack_off_x", 0)
     fun setAttackOffX(v: Int) = sp.edit().putInt("attack_off_x", v).apply()

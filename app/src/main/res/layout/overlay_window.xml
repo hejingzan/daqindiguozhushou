@@ -75,6 +75,19 @@
             android:backgroundTint="#616161" />
     </LinearLayout>
 
+    <Button
+        android:id="@+id/btn_lock"
+        android:layout_width="match_parent"
+        android:layout_height="32dp"
+        android:layout_marginTop="3dp"
+        android:text="🔒 锁盗匪(测按钮偏移)"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:padding="0dp"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:backgroundTint="#EF6C00" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

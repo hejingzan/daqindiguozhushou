@@ -58,6 +58,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var editActStart: EditText
     private lateinit var editActEnd: EditText
     private lateinit var editNoBandit: EditText
+    private lateinit var editBaseX: EditText
+    private lateinit var editBaseY: EditText
+    private lateinit var editRadial: EditText
     private lateinit var textBase: TextView
 
     /** 授权录屏成功后的下一步动作 */
@@ -113,11 +116,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 ACTION_START -> {
+                    // 不自动开始：录屏授权后，回到游戏点悬浮窗的「开始」即可挂机
                     handlerPost {
-                        sendService(BanditAccessibilityService.ACTION_START)
                         Toast.makeText(
                             this,
-                            "已启动，切到游戏即可自动打盗匪（悬浮窗可停止）",
+                            "已授权录屏。进游戏后点悬浮窗「开始」即挂机；点「锁盗匪」可校准按钮位置",
                             Toast.LENGTH_LONG
                         ).show()
                     }
@@ -185,6 +188,9 @@ class MainActivity : AppCompatActivity() {
         editActEnd = findViewById(R.id.edit_act_end)
         editNoBandit = findViewById(R.id.edit_nobandit)
         textBase = findViewById(R.id.text_base)
+        editBaseX = findViewById(R.id.edit_base_x)
+        editBaseY = findViewById(R.id.edit_base_y)
+        editRadial = findViewById(R.id.edit_radial)
 
         when (prefs.getHumanizeLevel()) {
             0 -> radioHuman.check(R.id.rb_low)
@@ -213,6 +219,12 @@ class MainActivity : AppCompatActivity() {
         val actEnd = prefs.getActivityEndMin()
         if (actStart >= 0) editActStart.setText(fmtMin(actStart))
         if (actEnd >= 0) editActEnd.setText(fmtMin(actEnd))
+        // 固定位置（可手填的坐标）
+        if (prefs.hasBasePos()) {
+            editBaseX.setText(prefs.getBaseX().toString())
+            editBaseY.setText(prefs.getBaseY().toString())
+        }
+        editRadial.setText(prefs.getRadialRadius().toString())
 
         btnStart.setOnClickListener { onStartClicked() }
         btnCalib.setOnClickListener { onCalibClicked() }
@@ -300,9 +312,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshBaseUi() {
         textBase.text = if (prefs.hasBasePos()) {
-            "固定位置：已设置（${prefs.getBaseX()}, ${prefs.getBaseY()}）· 校准第 1 步可重新指定"
+            "固定位置：已设置（${prefs.getBaseX()}, ${prefs.getBaseY()}）· 下方可直接修改"
         } else {
-            "固定位置：未设置（校准第 1 步点村庄）"
+            "固定位置：未设置（校准第 1 步点村庄，或在下方手填）"
         }
     }
 
@@ -372,15 +384,15 @@ class MainActivity : AppCompatActivity() {
     private fun onStartClicked() {
         if (!ensureAccessibility()) return
         saveAdvanced()
-        pendingAction = ACTION_START
         if (prefs.isCaptureReady()) {
-            sendService(BanditAccessibilityService.ACTION_START)
             Toast.makeText(
                 this,
-                "已启动，切到游戏即可自动打盗匪（悬浮窗可停止）",
+                "已就绪。进游戏后点悬浮窗「开始」即挂机；点「锁盗匪」可校准按钮位置",
                 Toast.LENGTH_LONG
             ).show()
+            refreshStatus()
         } else {
+            pendingAction = ACTION_START
             launchCapture()
         }
     }
@@ -440,6 +452,17 @@ class MainActivity : AppCompatActivity() {
         val cyPct = editCenterY.text.toString().toIntOrNull()?.coerceIn(0, 100) ?: 50
         prefs.setSearchCenterXRatio(cxPct / 100f)
         prefs.setSearchCenterYRatio(cyPct / 100f)
+        // 固定位置坐标（屏幕像素，可手填；校准第 1 步也会写这里）
+        val bx = editBaseX.text.toString().toIntOrNull()
+        val by = editBaseY.text.toString().toIntOrNull()
+        if (bx != null && by != null && bx >= 0 && by >= 0) {
+            prefs.setBaseX(bx); prefs.setBaseY(by)
+        } else if (editBaseX.text.isNullOrBlank() && editBaseY.text.isNullOrBlank()) {
+            prefs.clearBasePos()
+        }
+        // 放射菜单半径（按钮离盗匪多远，默认约 24px@1280，用户实测）
+        val rr = editRadial.text.toString().toIntOrNull()?.coerceIn(8, 400) ?: 24
+        prefs.setRadialRadius(rr)
         // 盗匪名字标签 → 实体点击点 下移比例（点名落空时点不中盗匪，调大此值）
         val noff = editNameOffset.text.toString().toFloatOrNull()?.coerceIn(0f, 0.3f) ?: 0.05f
         prefs.setNameBodyOffsetRatio(noff)

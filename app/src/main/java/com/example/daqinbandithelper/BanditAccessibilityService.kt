@@ -100,11 +100,8 @@ class BanditAccessibilityService : AccessibilityService() {
 
         // —— 实机录像（1280x620）实测几何参数 ——
         private const val REF_W = 1280.0
-        private const val RADIAL_R = 100.0   // 放射菜单半径
-        private const val ANG_ATTACK = -69.0  // 「讨伐」相对盗匪的角度
-        private const val ANG_BATTLE = -9.0   // 「战斗」相对盗匪的角度
-        private const val BTN_DX = 61.0       // 战斗 - 讨伐 的 x 偏移
-        private const val BTN_DY = 78.0       // 战斗 - 讨伐 的 y 偏移
+        private const val ANG_ATTACK = -69.0  // 「讨伐」相对盗匪的角度（≈1点钟）
+        private const val ANG_BATTLE = -9.0   // 「战斗」相对盗匪的角度（≈3点钟）
 
         // 阶段
         private const val ST_FIND = 0      // 找盗匪
@@ -1274,7 +1271,8 @@ class BanditAccessibilityService : AccessibilityService() {
     }
 
     /** 自动识别失败时，弹全屏提示让用户点一下盗匪的位置，从该点采模板继续 */
-    private fun enterPickBanditMode() {
+    /** 通用「请点一下屏幕某处」拾取浮层 */
+    private fun showPickOverlay(text: String, onTap: (Int, Int) -> Unit) {
         pickMode = true
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
@@ -1283,10 +1281,7 @@ class BanditAccessibilityService : AccessibilityService() {
         tv.setTextColor(Color.WHITE)
         tv.textSize = 18f
         tv.setPadding(48, 90, 48, 48)
-        tv.text = "自动没找到盗匪。\n\n" +
-                "请直接点一下地图上的任意一个【盗匪】（红褐色小兵那一队），\n" +
-                "APP 会记住它的样子并继续自动挂机。\n\n" +
-                "（点哪里都行，我们取你点的位置来识别）"
+        tv.text = text
         root.addView(
             tv,
             LinearLayout.LayoutParams(
@@ -1296,7 +1291,7 @@ class BanditAccessibilityService : AccessibilityService() {
         )
         root.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_DOWN) {
-                onPickBandit(event.x.toInt(), event.y.toInt())
+                onTap(event.x.toInt(), event.y.toInt())
                 true
             } else false
         }
@@ -1316,9 +1311,98 @@ class BanditAccessibilityService : AccessibilityService() {
             pickParams = params
         } catch (e: Exception) {
             Log.e(TAG, "pick overlay failed", e)
-            // 连拾取浮层都建不了，退回重试自动识别
-            autoTries = 0
-            handler.postDelayed({ autoCalibrateStep() }, 1500)
+            pickMode = false
+            onTap(-1, -1)
+        }
+    }
+
+    /** 自动识别失败时，让用户点一下盗匪位置 */
+    private fun enterPickBanditMode() {
+        showPickOverlay(
+            "自动没找到盗匪。\n\n" +
+                    "请直接点一下地图上的任意一个【盗匪】（红褐色小兵那一队），\n" +
+                    "APP 会记住它的样子并继续自动挂机。\n\n" +
+                    "（点哪里都行，我们取你点的位置来识别）"
+        ) { x, y -> if (x >= 0) onPickBandit(x, y) else autoCalibrateRetry() }
+    }
+
+    /** 自动识别失败后的补救：退回重试自动识别 */
+    private fun autoCalibrateRetry() {
+        autoTries = 0
+        handler.postDelayed({ autoCalibrateStep() }, 1500)
+    }
+
+    /**
+     * 「锁盗匪」：用户点一下真实盗匪，APP 点开它的放射菜单，
+     * 自动测出「讨伐 / 战斗」按钮相对盗匪的准确偏移并保存。
+     * 之后每次点按钮都按实测偏移（随屏幕自适应），彻底解决点偏到左下角的问题。
+     */
+    private fun enterLockBanditMode() {
+        if (running) stopLoop()
+        showPickOverlay(
+            "【锁定盗匪 · 测按钮偏移】\n\n" +
+                    "请在游戏里点一下任意一个【盗匪本体】（红褐色那队），\n" +
+                    "APP 会自动点开它的菜单，并测出「讨伐 / 战斗」按钮相对盗匪的准确位置。\n\n" +
+                    "测好后，之后每次都按这个实测偏移点，根治点偏到左下角的问题。\n" +
+                    "（点完会在悬浮窗提示结果，随后点「开始」挂机即可）"
+        ) { x, y -> if (x >= 0) onLockBandit(x, y) else toast("未取到位置，请重试锁盗匪") }
+    }
+
+    private fun onLockBandit(x: Int, y: Int) {
+        pickMode = false
+        removePickOverlay()
+        updateOverlayStatus("锁定盗匪 · 测按钮偏移…")
+        // 先点一下盗匪，让放射菜单弹出来
+        handler.postDelayed({
+            dispatchTap(x, y) {
+                // 等菜单出现再截图检测按钮
+                handler.postDelayed({ measureBtnOffsetsFrom(x, y) }, 650)
+            }
+        }, 300)
+    }
+
+    /** 在 (bx,by) 已点开菜单后，检测 讨伐/战斗 按钮并计算相对偏移（角度过滤：1点钟/3点钟） */
+    private fun measureBtnOffsetsFrom(bx: Int, by: Int) {
+        val cands = detectMenuButtons(Point(bx, by))
+        var bestA: BtnCand? = null
+        var bestB: BtnCand? = null
+        for (c in cands) {
+            val dx = c.x - bx; val dy = c.y - by
+            val ang = Math.toDegrees(Math.atan2(dy.toDouble(), dx.toDouble()))
+            val dist = Math.hypot(dx.toDouble(), dy.toDouble())
+            if (ang in -110.0..-25.0) {
+                if (bestA == null || Math.abs(ang + 69) < Math.abs(
+                        Math.toDegrees(Math.atan2((bestA.y - by).toDouble(), (bestA.x - bx).toDouble())) + 69
+                    )
+                ) bestA = c
+            }
+            if (ang in -50.0..45.0) {
+                if (bestB == null || Math.abs(ang + 9) < Math.abs(
+                        Math.toDegrees(Math.atan2((bestB.y - by).toDouble(), (bestB.x - bx).toDouble())) + 9
+                    )
+                ) bestB = c
+            }
+            // 记录已测半径（取最近候选）以便几何兜底
+            if (dist > 0) prefs.setRadialRadius(dist.toInt().coerceIn(8, 400))
+        }
+        var measured = false
+        if (bestA != null) {
+            prefs.setAttackOffX(bestA.x - bx)
+            prefs.setAttackOffY(bestA.y - by)
+            measured = true
+        }
+        if (bestB != null) {
+            prefs.setBattleOffX(bestB.x - bx)
+            prefs.setBattleOffY(bestB.y - by)
+            measured = true
+        }
+        if (measured) {
+            prefs.setHasBtnOffsets(true)
+            toast("已锁定盗匪，讨伐/战斗按钮偏移已实测并保存")
+            updateOverlayStatus("已锁定 · 偏移已更新 · 点「开始」挂机")
+        } else {
+            toast("没测到菜单按钮，可能菜单没弹开，请重试「锁盗匪」")
+            updateOverlayStatus("未测到按钮 · 可重试锁盗匪")
         }
     }
 
@@ -1525,12 +1609,13 @@ class BanditAccessibilityService : AccessibilityService() {
     // —— 阶段 2：点放射菜单里的「讨伐 / 战斗」 ——
 
     /**
-     * 放射菜单是以盗匪图标为圆心展开的（实测：半径 100px@1280 宽，
-     * 讨伐在 -69°、战斗在 -9°），所以按钮位置必须相对盗匪算，不能用固定坐标。
+     * 放射菜单是以盗匪图标为圆心展开的（实测：半径约 24px@1280 宽，
+     * 讨伐在 -69°≈1点钟、战斗在 -9°≈3点钟方向），所以按钮位置必须相对盗匪算，不能用固定坐标。
+     * 半径默认 24（可在 APP 高级设置改），按屏幕宽度自适应缩放。
      */
     private fun radialPos(bandit: Point, angleDeg: Double): Point {
         val k = if (screenWidth > 0) screenWidth / REF_W else 1.0
-        val r = RADIAL_R * k
+        val r = prefs.getRadialRadius() * k
         val rad = Math.toRadians(angleDeg)
         val x = bandit.x + (r * Math.cos(rad)).toInt()
         val y = bandit.y + (r * Math.sin(rad)).toInt()
@@ -1538,6 +1623,27 @@ class BanditAccessibilityService : AccessibilityService() {
             x.coerceIn(2, (screenWidth - 2).coerceAtLeast(3)),
             y.coerceIn(2, (screenHeight - 2).coerceAtLeast(3))
         )
+    }
+
+    /**
+     * 讨伐/战斗按钮的预期位置：
+     * - 若已通过「锁定盗匪」或校准实测过偏移，则直接用实测偏移（最准、随设备像素对齐）；
+     * - 否则退回几何推算（按屏幕宽度自适应缩放的放射半径 + 角度）。
+     */
+    private fun expectedAttackPos(bandit: Point): Point {
+        if (prefs.hasBtnOffsets()) {
+            val ox = prefs.getAttackOffX(); val oy = prefs.getAttackOffY()
+            if (ox != 0 || oy != 0) return Point(bandit.x + ox, bandit.y + oy)
+        }
+        return radialPos(bandit, ANG_ATTACK)
+    }
+
+    private fun expectedBattlePos(bandit: Point): Point {
+        if (prefs.hasBtnOffsets()) {
+            val ox = prefs.getBattleOffX(); val oy = prefs.getBattleOffY()
+            if (ox != 0 || oy != 0) return Point(bandit.x + ox, bandit.y + oy)
+        }
+        return radialPos(bandit, ANG_BATTLE)
     }
 
     private data class BtnCand(val x: Int, val y: Int, val score: Int)
@@ -1553,8 +1659,9 @@ class BanditAccessibilityService : AccessibilityService() {
         val list = mutableListOf<BtnCand>()
         try {
             val k = if (screenWidth > 0) screenWidth / REF_W else 1.0
-            val rMin = (RADIAL_R * 0.45 * k).toInt().coerceAtLeast(28)
-            val rMax = (RADIAL_R * 2.0 * k).toInt().coerceAtLeast(rMin + 20)
+            val rr = prefs.getRadialRadius().coerceAtLeast(8)
+            val rMin = (rr * 0.45 * k).toInt().coerceAtLeast(20)
+            val rMax = (rr * 2.2 * k).toInt().coerceAtLeast(rMin + 20)
             val cx = bandit.x; val cy = bandit.y
             val pts = mutableListOf<Point>()
             var y = cy - rMax
@@ -1613,7 +1720,7 @@ class BanditAccessibilityService : AccessibilityService() {
         }
         val wantBattle = prefs.getAttackMode() == 1
         val label = if (wantBattle) "战斗" else "讨伐"
-        val exp = radialPos(bandit, if (wantBattle) ANG_BATTLE else ANG_ATTACK)
+        val exp = if (wantBattle) expectedBattlePos(bandit) else expectedAttackPos(bandit)
 
         // 1) 有模板就按几何位置附近精确匹配（最快最准）
         if (attackTpl != null) {
@@ -1979,6 +2086,13 @@ class BanditAccessibilityService : AccessibilityService() {
         val tpl = baseTpl ?: return
         val p = matchTemplate(tpl)
         if (p == null) {
+            // 没有固定位置模板时，若用户手动填过坐标，直接把它当屏幕坐标参考
+            if (prefs.hasBasePos() && screenWidth > 0) {
+                scanDx = screenWidth / 2 - prefs.getBaseX()
+                scanDy = screenHeight / 2 - prefs.getBaseY()
+                updateNotif("使用手动固定位置为中心搜索")
+                return
+            }
             toast("未找到固定位置，按当前视野为中心搜索")
             updateNotif("未找到固定位置，按当前视野搜索")
             return
@@ -2318,14 +2432,15 @@ class BanditAccessibilityService : AccessibilityService() {
                     prefs.setAttackPos(x, y)
                     prefs.setAttackOffX(x - calibBanditX)
                     prefs.setAttackOffY(y - calibBanditY)
-                    // 「战斗」按钮在同一张画面里，按实测偏移一并采集
-                    val k = if (screenWidth > 0) screenWidth / REF_W else 1.0
-                    val bx = (x + BTN_DX * k).toInt()
-                    val by = (y + BTN_DY * k).toInt()
-                    captureTemplateFile("battle", bx, by, 34)
+                    // 「战斗」按钮与「讨伐」在同一张放射菜单里，按真实几何角度（-9°≈3点钟）
+                    // 相对盗匪算出正确位置再采模板，不再用旧的固定像素差（旧值对应半径100，已废弃）
+                    val bp = radialPos(Point(calibBanditX, calibBanditY), ANG_BATTLE)
+                    captureTemplateFile("battle", bp.x, bp.y, 34)
                     battleTpl = loadTpl("battle")
-                    prefs.setBattleOffX(bx - calibBanditX)
-                    prefs.setBattleOffY(by - calibBanditY)
+                    prefs.setBattleOffX(bp.x - calibBanditX)
+                    prefs.setBattleOffY(bp.y - calibBanditY)
+                    // 校准已实测到两个按钮相对盗匪的偏移，之后优先用实测偏移点（比纯几何更准）
+                    prefs.setHasBtnOffsets(true)
                 }
                 CAL_SELECT -> {
                     // 用颜色定位按钮中心截取，保证与运行时的像素比对完全对齐
@@ -2517,6 +2632,14 @@ class BanditAccessibilityService : AccessibilityService() {
             overlayView = null
             toast("助手已退出")
             stopSelf()
+        }
+        view.findViewById<Button>(R.id.btn_lock)?.setOnClickListener {
+            haptic()
+            if (!captureReady) {
+                toast("请先在 APP 里授权录屏")
+                return@setOnClickListener
+            }
+            enterLockBanditMode()
         }
         btnMinus.setOnClickListener {
             haptic()
