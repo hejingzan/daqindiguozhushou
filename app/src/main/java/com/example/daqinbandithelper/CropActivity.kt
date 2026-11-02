@@ -8,7 +8,7 @@ import android.widget.Button
 import android.widget.ImageView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import kotlin.math.minOf
+import kotlin.math.min
 
 class CropActivity : AppCompatActivity() {
     private lateinit var prefs: Prefs
@@ -40,7 +40,7 @@ class CropActivity : AppCompatActivity() {
             val vw = imgView.width.toFloat()
             val vh = imgView.height.toFloat()
             if (iw <= 0 || ih <= 0 || vw <= 0 || vh <= 0) return@post
-            dispScale = minOf(vw / iw, vh / ih)
+            dispScale = min(vw / iw, vh / ih)
             dispLeft = (vw - iw * dispScale) / 2f
             dispTop = (vh - ih * dispScale) / 2f
         }

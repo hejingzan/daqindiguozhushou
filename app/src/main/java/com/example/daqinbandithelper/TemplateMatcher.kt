@@ -1,8 +1,8 @@
 package com.example.daqinbandithelper
 
 import android.graphics.Bitmap
-import kotlin.math.maxOf
-import kotlin.math.minOf
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
@@ -43,7 +43,7 @@ object TemplateMatcher {
      * @param maxDim 缩放到的最大边长，用于加速（坐标会自动映射回原图）
      */
     fun match(frame: Bitmap, template: Bitmap, threshold: Float, maxDim: Int = 480): Result {
-        val scale = minOf(1f, maxDim.toFloat() / maxOf(frame.width, frame.height))
+        val scale = min(1f, maxDim.toFloat() / max(frame.width, frame.height))
         val fBmp = scale(frame, scale)
         val tBmp = scale(template, scale)
         val fw = fBmp.width
@@ -64,7 +64,7 @@ object TemplateMatcher {
         val tStd = sqrt(tVar)
         if (tStd < 1e-4f) return Result(false, 0, 0, -2f)
 
-        val step = maxOf(1, fw / 180)
+        val step = max(1, fw / 180)
         var best = -2f
         var bx = 0
         var by = 0

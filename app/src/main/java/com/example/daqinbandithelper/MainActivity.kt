@@ -2,6 +2,7 @@ package com.example.daqinbandithelper
 
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler

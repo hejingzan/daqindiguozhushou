@@ -7,8 +7,8 @@ import android.graphics.Rect
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
-import kotlin.math.maxOf
-import kotlin.math.minOf
+import kotlin.math.max
+import kotlin.math.min
 
 /** 全屏透明层，手指拖动框选模板区域。松手即回调矩形（屏幕坐标）。 */
 class CropView @JvmOverloads constructor(
@@ -56,10 +56,10 @@ class CropView @JvmOverloads constructor(
     }
 
     private fun currentRect(): Rect {
-        val left = minOf(startX, curX).toInt()
-        val top = minOf(startY, curY).toInt()
-        val right = maxOf(startX, curX).toInt()
-        val bottom = maxOf(startY, curY).toInt()
+        val left = min(startX, curX).toInt()
+        val top = min(startY, curY).toInt()
+        val right = max(startX, curX).toInt()
+        val bottom = max(startY, curY).toInt()
         return Rect(left, top, right, bottom)
     }
 
