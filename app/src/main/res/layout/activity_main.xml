@@ -5,595 +5,125 @@
 
     <LinearLayout
         android:orientation="vertical"
-        android:padding="20dp"
+        android:padding="16dp"
         android:layout_width="match_parent"
         android:layout_height="wrap_content">
-
-        <TextView
-            android:id="@+id/text_crash"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text=""
-            android:textSize="12sp"
-            android:textColor="#C62828"
-            android:background="#FFEBEE"
-            android:padding="8dp"
-            android:textIsSelectable="true"
-            android:visibility="gone"
-            android:layout_marginBottom="12dp" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            android:textSize="22sp"
-            android:textStyle="bold"
-            android:gravity="center"
-            android:layout_marginBottom="4dp" />
 
         <TextView
             android:id="@+id/text_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="状态：未校准"
-            android:gravity="center"
-            android:textSize="14sp"
-            android:textColor="#6A5ACD"
-            android:layout_marginBottom="16dp" />
+            android:text="状态：就绪"
+            android:textSize="13sp"
+            android:textColor="#FFFFFF"
+            android:background="#263238"
+            android:padding="10dp"
+            android:layout_marginBottom="10dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="一、先开启权限"
+            android:textStyle="bold"
+            android:textSize="15sp"
+            android:layout_marginTop="4dp" />
 
         <Button
             android:id="@+id/btn_acc"
             android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:text="⛨ 开启无障碍权限（必做）"
-            android:textSize="17sp"
-            android:layout_marginTop="12dp"
-            android:backgroundTint="#EF6C00" />
+            android:layout_height="48dp"
+            android:text="⛨ 开启无障碍权限"
+            android:layout_marginTop="6dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="二、采集模板（游戏里把对应按钮露出来，再点下面的按钮，悬浮「截图」会浮出来，进游戏点它即可裁图）"
+            android:textSize="12sp"
+            android:layout_marginTop="12dp" />
+
+        <GridLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:columnCount="2"
+            android:layout_marginTop="6dp">
+
+            <Button android:id="@+id/btn_capture_bandit" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="① 盗匪图标" android:textSize="13sp" />
+            <Button android:id="@+id/btn_capture_attack" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="② 讨伐" android:textSize="13sp" />
+            <Button android:id="@+id/btn_capture_march" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="③ 确认出征" android:textSize="13sp" />
+            <Button android:id="@+id/btn_capture_confirm" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="④ 确定领奖" android:textSize="13sp" />
+            <Button android:id="@+id/btn_capture_close" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="⑤ 关闭叉号" android:textSize="13sp" />
+            <Button android:id="@+id/btn_capture_home" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="⑥ 主城/地图" android:textSize="13sp" />
+        </GridLayout>
+
+        <TextView
+            android:id="@+id/text_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="12sp"
+            android:textColor="#FFB74D"
+            android:layout_marginTop="6dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="三、参数设置"
+            android:textStyle="bold"
+            android:textSize="15sp"
+            android:layout_marginTop="12dp" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="最低等级" android:textSize="13sp" android:gravity="center_vertical" />
+            <EditText android:id="@+id/edit_min_level" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:inputType="number" android:text="1" />
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="最高等级" android:textSize="13sp" android:gravity="center_vertical" />
+            <EditText android:id="@+id/edit_max_level" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:inputType="number" android:text="99" />
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="4dp">
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="体力下限" android:textSize="13sp" android:gravity="center_vertical" />
+            <EditText android:id="@+id/edit_stamina" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:inputType="number" android:text="20" />
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="最大轮次" android:textSize="13sp" android:gravity="center_vertical" />
+            <EditText android:id="@+id/edit_max_cycle" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:inputType="number" android:text="30" />
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="4dp">
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="匹配阈值(0.6-0.95)" android:textSize="13sp" android:gravity="center_vertical" />
+            <EditText android:id="@+id/edit_threshold" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:inputType="numberDecimal" android:text="0.8" />
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="4dp">
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="基础延时(ms)" android:textSize="13sp" android:gravity="center_vertical" />
+            <EditText android:id="@+id/edit_delay" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:inputType="number" android:text="1200" />
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="休眠(秒)" android:textSize="13sp" android:gravity="center_vertical" />
+            <EditText android:id="@+id/edit_sleep" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:inputType="number" android:text="300" />
+        </LinearLayout>
+
+        <CheckBox
+            android:id="@+id/check_ocr"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="启用 OCR 等级/体力识别（需联网首次下载模型，不勾也能纯模板匹配）"
+            android:textSize="12sp"
+            android:layout_marginTop="6dp" />
 
         <Button
             android:id="@+id/btn_start"
             android:layout_width="match_parent"
-            android:layout_height="64dp"
-            android:text="① 授权录屏并启动助手"
-            android:textSize="19sp"
-            android:backgroundTint="#2E7D32" />
-
-        <Button
-            android:id="@+id/btn_calib"
-            android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:text="② 校准（在游戏里按提示点）"
-            android:textSize="17sp"
+            android:text="▶ 开始挂机"
+            android:textSize="16sp"
+            android:textStyle="bold"
             android:layout_marginTop="12dp"
-            android:backgroundTint="#1565C0" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="出战队伍数（校准第 6 步「自选队伍」后可用）"
-            android:textStyle="bold"
-            android:layout_marginTop="16dp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginTop="6dp">
-
-            <TextView
-                android:id="@+id/text_troop"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="自选队伍：未校准"
-                android:textSize="15sp" />
-
-            <Button
-                android:id="@+id/btn_minus"
-                android:layout_width="52dp"
-                android:layout_height="44dp"
-                android:text="－"
-                android:textSize="20sp"
-                android:padding="0dp"
-                android:minWidth="0dp" />
-
-            <Button
-                android:id="@+id/btn_plus"
-                android:layout_width="52dp"
-                android:layout_height="44dp"
-                android:layout_marginStart="6dp"
-                android:text="＋"
-                android:textSize="20sp"
-                android:padding="0dp"
-                android:minWidth="0dp" />
-        </LinearLayout>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="盗匪搜索方式"
-            android:textStyle="bold"
-            android:layout_marginTop="16dp" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="盗匪名称关键词（文字识别，逗号分隔，如 盗匪喽啰,盗匪精英）"
-            android:textSize="13sp"
-            android:layout_marginTop="8dp" />
-
-        <EditText
-            android:id="@+id/edit_banditname"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="盗匪喽啰,盗匪精英"
-            android:inputType="text"
-            android:textSize="13sp" />
-
-        <CheckBox
-            android:id="@+id/check_fullscreen"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="全屏搜索（扫描整个屏幕，忽略范围限制，默认开）"
-            android:checked="true"
-            android:textSize="13sp"
-            android:layout_marginTop="8dp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="固定点 X (屏幕宽度百分比 0-100，即拉兵位置)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-            <EditText
-                android:id="@+id/edit_center_x"
-                android:layout_width="70dp"
-                android:layout_height="wrap_content"
-                android:hint="50"
-                android:inputType="number"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="固定点 Y (屏幕高度百分比 0-100，即拉兵位置)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-            <EditText
-                android:id="@+id/edit_center_y"
-                android:layout_width="70dp"
-                android:layout_height="wrap_content"
-                android:hint="50"
-                android:inputType="number"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="屏幕中心搜索范围(占屏比例,全屏关闭时生效)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-            <EditText
-                android:id="@+id/edit_center_ratio"
-                android:layout_width="80dp"
-                android:layout_height="wrap_content"
-                android:hint="0.48"
-                android:inputType="numberDecimal"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="盗匪标签下移(屏高比例,点名落空时调大)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-            <EditText
-                android:id="@+id/edit_name_offset"
-                android:layout_width="80dp"
-                android:layout_height="wrap_content"
-                android:hint="0.05"
-                android:inputType="numberDecimal"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <RadioGroup
-            android:id="@+id/radio_scan"
-            android:orientation="horizontal"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp">
-
-            <RadioButton
-                android:id="@+id/rb_scan_area"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="固定位置周边" />
-
-            <RadioButton
-                android:id="@+id/rb_scan_all"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="全图随机" />
-        </RadioGroup>
-
-        <TextView
-            android:id="@+id/text_base"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="固定位置：未设置（校准第 1 步点村庄，或下方手填）"
-            android:textSize="12sp"
-            android:layout_marginTop="4dp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="6dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="固定位置 X,Y(屏幕像素)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-
-            <EditText
-                android:id="@+id/edit_base_x"
-                android:layout_width="74dp"
-                android:layout_height="wrap_content"
-                android:hint="如 1281"
-                android:inputType="number"
-                android:textSize="13sp" />
-
-            <EditText
-                android:id="@+id/edit_base_y"
-                android:layout_width="74dp"
-                android:layout_height="wrap_content"
-                android:hint="如 398"
-                android:inputType="number"
-                android:textSize="13sp"
-                android:layout_marginStart="6dp" />
-        </LinearLayout>
-
-        <Button
-            android:id="@+id/btn_pick_base"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="📍 在游戏里点选固定位置（更准/可改）"
-            android:textSize="13sp"
-            android:layout_marginTop="6dp"
             android:backgroundTint="#2E7D32" />
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="按钮离盗匪半径(px@1280)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-
-            <EditText
-                android:id="@+id/edit_radial"
-                android:layout_width="80dp"
-                android:layout_height="wrap_content"
-                android:hint="24"
-                android:inputType="number"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="搜索半径(里)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-
-            <EditText
-                android:id="@+id/edit_radius"
-                android:layout_width="80dp"
-                android:layout_height="wrap_content"
-                android:hint="1000"
-                android:inputType="number"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="只打射程内(里,0=不限)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-
-            <EditText
-                android:id="@+id/edit_range_li"
-                android:layout_width="80dp"
-                android:layout_height="wrap_content"
-                android:hint="0"
-                android:inputType="number"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="每里=多少像素"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-
-            <EditText
-                android:id="@+id/edit_lipixel"
-                android:layout_width="80dp"
-                android:layout_height="wrap_content"
-                android:hint="3"
-                android:inputType="numberDecimal"
-                android:textSize="13sp" />
-        </LinearLayout>
-
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="盗匪等级筛选"
-            android:textStyle="bold"
-            android:layout_marginTop="16dp" />
-
-        <RadioGroup
-            android:id="@+id/radio_level"
-            android:orientation="horizontal"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp">
-
-            <RadioButton
-                android:id="@+id/rb_level_any"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="不限等级" />
-
-            <RadioButton
-                android:id="@+id/rb_level_only"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="只打指定等级" />
-        </RadioGroup>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="讨伐方式（放射菜单里点哪个）"
-            android:textStyle="bold"
-            android:layout_marginTop="16dp" />
-
-        <RadioGroup
-            android:id="@+id/radio_mode"
-            android:orientation="horizontal"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp">
-
-            <RadioButton
-                android:id="@+id/rb_mode_attack"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="讨伐（消耗令）" />
-
-            <RadioButton
-                android:id="@+id/rb_mode_battle"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="战斗（不消耗）" />
-        </RadioGroup>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="盗匪活动时段（只在活动时间内挂机，留空=全天）"
-            android:textStyle="bold"
-            android:layout_marginTop="16dp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="开始(如 20:00)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-
-            <EditText
-                android:id="@+id/edit_act_start"
-                android:layout_width="86dp"
-                android:layout_height="wrap_content"
-                android:hint="20:00"
-                android:inputType="time"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="结束(如 22:30)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-
-            <EditText
-                android:id="@+id/edit_act_end"
-                android:layout_width="86dp"
-                android:layout_height="wrap_content"
-                android:hint="22:30"
-                android:inputType="time"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="找不到盗匪等(秒)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-
-            <EditText
-                android:id="@+id/edit_nobandit"
-                android:layout_width="80dp"
-                android:layout_height="wrap_content"
-                android:hint="30"
-                android:inputType="number"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="高级设置"
-            android:textStyle="bold"
-            android:layout_marginTop="16dp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="出征后至少等待(秒)，之后自动等部队恢复"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-            <EditText
-                android:id="@+id/edit_wait"
-                android:layout_width="80dp"
-                android:layout_height="wrap_content"
-                android:hint="20"
-                android:inputType="number"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-            <TextView
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="匹配灵敏度(20-120)"
-                android:gravity="center_vertical"
-                android:textSize="13sp" />
-            <EditText
-                android:id="@+id/edit_thresh"
-                android:layout_width="80dp"
-                android:layout_height="wrap_content"
-                android:hint="55"
-                android:inputType="number"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="拟人化程度（让操作更像真人）"
-            android:textStyle="bold"
-            android:layout_marginTop="16dp" />
-
-        <RadioGroup
-            android:id="@+id/radio_human"
-            android:orientation="horizontal"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp">
-            <RadioButton android:id="@+id/rb_low" android:layout_width="0dp" android:layout_height="wrap_content" android:text="轻" android:layout_weight="1" />
-            <RadioButton android:id="@+id/rb_mid" android:layout_width="0dp" android:layout_height="wrap_content" android:text="中" android:layout_weight="1" />
-            <RadioButton android:id="@+id/rb_high" android:layout_width="0dp" android:layout_height="wrap_content" android:text="强" android:layout_weight="1" />
-        </RadioGroup>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/help_text"
-            android:textSize="12sp"
-            android:layout_marginTop="16dp" />
+            android:text="⚠ 学习研究用途，游戏官方禁止脚本，真机使用有封号风险，勿用于正式账号。"
+            android:textSize="11sp"
+            android:textColor="#C62828"
+            android:layout_marginTop="10dp" />
 
     </LinearLayout>
 </ScrollView>

@@ -1,581 +1,148 @@
 package com.example.daqinbandithelper
 
-import android.Manifest
-import android.app.Activity
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import android.view.View
-import android.widget.Button
-import android.widget.CheckBox
-import android.widget.EditText
-import android.widget.RadioGroup
-import android.widget.TextView
-import android.widget.Toast
+import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import java.io.File
 
-/**
- * 主界面只做三件事：
- *  ① 引导开启无障碍权限；
- *  ② 申请录屏授权（Android 要求弹窗必须由界面发起，拿到授权后悬浮窗才能识别画面）；
- *  ③ 提供校准入口与队伍数设置。
- * 授权完成后，所有实际操作都在游戏内的悬浮控制台上完成，不用再来回切应用。
- */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: Prefs
     private lateinit var textStatus: TextView
-    private lateinit var textTroop: TextView
+    private lateinit var textHint: TextView
     private lateinit var btnStart: Button
-    private lateinit var btnCalib: Button
-    private lateinit var btnAcc: Button
-    private lateinit var btnMinus: Button
-    private lateinit var btnPlus: Button
-    private lateinit var editWait: EditText
-    private lateinit var editThresh: EditText
-    private lateinit var radioHuman: RadioGroup
-    private lateinit var radioScan: RadioGroup
-    private lateinit var radioLevel: RadioGroup
-    private lateinit var radioMode: RadioGroup
-    private lateinit var editRadius: EditText
-    private lateinit var editLiPixel: EditText
-    private lateinit var editBanditName: EditText
-    private lateinit var editCenterRatio: EditText
-    private lateinit var editNameOffset: EditText
-    private lateinit var checkFullScreen: CheckBox
-    private lateinit var editCenterX: EditText
-    private lateinit var editCenterY: EditText
-    private lateinit var editActStart: EditText
-    private lateinit var editActEnd: EditText
-    private lateinit var editNoBandit: EditText
-    private lateinit var editBaseX: EditText
-    private lateinit var editBaseY: EditText
-    private lateinit var editRadial: EditText
-    private lateinit var editRangeLi: EditText
-    private lateinit var textBase: TextView
-    private lateinit var btnPickBase: Button
-
-    /** 授权录屏成功后的下一步动作 */
-    private var pendingAction = ""
-
-    private val mainHandler = Handler(Looper.getMainLooper())
-
-    private val calibReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == BanditAccessibilityService.ACTION_CALIB_DONE) {
-                refreshStatus()
-                refreshTroopUi()
-                refreshBaseUi()
-                Toast.makeText(
-                    this@MainActivity,
-                    "校准完成！切到游戏点悬浮窗「开始」",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
-    }
-
-    /** 服务发来：录屏授权已失效，需要重新申请 */
-    private val needCaptureReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == BanditAccessibilityService.ACTION_NEED_CAPTURE) {
-                pendingAction = ACTION_START
-                Toast.makeText(
-                    this@MainActivity,
-                    "录屏授权已失效，请重新授权以开始",
-                    Toast.LENGTH_LONG
-                ).show()
-                launchCapture()
-            }
-        }
-    }
-
-    /** 服务发来：用户在游戏里点选了固定位置，回填输入框 */
-    private val basePickReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == BanditAccessibilityService.ACTION_BASE_PICKED) {
-                val x = intent.getIntExtra("x", -1)
-                val y = intent.getIntExtra("y", -1)
-                if (x >= 0 && y >= 0) {
-                    if (::editBaseX.isInitialized) {
-                        editBaseX.setText(x.toString())
-                        editBaseY.setText(y.toString())
-                    }
-                    refreshBaseUi()
-                    Toast.makeText(
-                        this@MainActivity,
-                        "已填入固定位置 ($x, $y)，与游戏内完全对应",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-        }
-    }
+    private val handler = Handler(Looper.getMainLooper())
+    private var pendingAction = ""  // "bot" | "capture"
 
     private val mediaProj = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            sendCaptureToService(result.resultCode, result.data!!)
-            // 录屏授权拿到后，再执行用户点的功能
-            when (pendingAction) {
-                ACTION_CALIBRATE -> {
-                    handlerPost {
-                        sendService(BanditAccessibilityService.ACTION_CALIBRATE)
-                        Toast.makeText(
-                            this,
-                            "切到游戏，按提示依次点：盗匪 → 讨伐 → 全选 → 确定",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-                ACTION_START -> {
-                    // 不自动开始：录屏授权后，回到游戏点悬浮窗的「开始」即可挂机
-                    handlerPost {
-                        Toast.makeText(
-                            this,
-                            "已授权录屏。进游戏后点悬浮窗「开始」即挂机；点「锁盗匪」可校准按钮位置",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-            }
-            pendingAction = ""
-            handlerPost { refreshStatus() }
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            launchService(result.resultCode, result.data!!)
         } else {
-            Toast.makeText(this, "未授权录屏，无法识别画面", Toast.LENGTH_LONG).show()
-            refreshStatus()
-        }
-    }
-
-    private val notifPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { /* 通知权限授权与否都不影响核心功能 */ }
-
-    private fun ensureNotifPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
+            Toast.makeText(this, "未授权录屏，无法继续", Toast.LENGTH_LONG).show()
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        installCrashHandler()
-        try {
-            initUi()
-        } catch (e: Throwable) {
-            saveCrashLog(e)
-            showFatal(e)
-        }
-    }
-
-    private fun initUi() {
         setContentView(R.layout.activity_main)
         prefs = Prefs(this)
-
         textStatus = findViewById(R.id.text_status)
-        textTroop = findViewById(R.id.text_troop)
+        textHint = findViewById(R.id.text_hint)
         btnStart = findViewById(R.id.btn_start)
-        btnCalib = findViewById(R.id.btn_calib)
-        btnAcc = findViewById(R.id.btn_acc)
-        btnMinus = findViewById(R.id.btn_minus)
-        btnPlus = findViewById(R.id.btn_plus)
-        editWait = findViewById(R.id.edit_wait)
-        editThresh = findViewById(R.id.edit_thresh)
-        radioHuman = findViewById(R.id.radio_human)
-        radioScan = findViewById(R.id.radio_scan)
-        radioLevel = findViewById(R.id.radio_level)
-        radioMode = findViewById(R.id.radio_mode)
-        editRadius = findViewById(R.id.edit_radius)
-        editLiPixel = findViewById(R.id.edit_lipixel)
-        editBanditName = findViewById(R.id.edit_banditname)
-        editCenterRatio = findViewById(R.id.edit_center_ratio)
-        editNameOffset = findViewById(R.id.edit_name_offset)
-        checkFullScreen = findViewById(R.id.check_fullscreen)
-        editCenterX = findViewById(R.id.edit_center_x)
-        editCenterY = findViewById(R.id.edit_center_y)
-        editActStart = findViewById(R.id.edit_act_start)
-        editActEnd = findViewById(R.id.edit_act_end)
-        editNoBandit = findViewById(R.id.edit_nobandit)
-        btnPickBase = findViewById(R.id.btn_pick_base)
-        textBase = findViewById(R.id.text_base)
-        editBaseX = findViewById(R.id.edit_base_x)
-        editBaseY = findViewById(R.id.edit_base_y)
-        editRadial = findViewById(R.id.edit_radial)
-        editRangeLi = findViewById(R.id.edit_range_li)
 
-        when (prefs.getHumanizeLevel()) {
-            0 -> radioHuman.check(R.id.rb_low)
-            2 -> radioHuman.check(R.id.rb_high)
-            else -> radioHuman.check(R.id.rb_mid)
-        }
-        if (prefs.getSearchMode() == 1) radioScan.check(R.id.rb_scan_area)
-        else radioScan.check(R.id.rb_scan_all)
-        if (prefs.isLevelOnly()) radioLevel.check(R.id.rb_level_only)
-        else radioLevel.check(R.id.rb_level_any)
-        if (prefs.getAttackMode() == 1) radioMode.check(R.id.rb_mode_battle)
-        else radioMode.check(R.id.rb_mode_attack)
-
-        editWait.setText((prefs.getBattleWaitMs() / 1000).toString())
-        editThresh.setText(prefs.getMatchThreshold().toString())
-        editRadius.setText(prefs.getSearchRadiusLi().toString())
-        editLiPixel.setText(trimFloat(prefs.getLiPixel()))
-        editNoBandit.setText(prefs.getNoBanditWaitSec().toString())
-        editBanditName.setText(prefs.getBanditNameKeywords().joinToString(","))
-        editCenterRatio.setText(trimFloat(prefs.getCenterRadiusRatio()))
-        editNameOffset.setText(trimFloat(prefs.getNameBodyOffsetRatio()))
-        checkFullScreen.isChecked = prefs.isFullScreenSearch()
-        editCenterX.setText((prefs.getSearchCenterXRatio() * 100).toInt().toString())
-        editCenterY.setText((prefs.getSearchCenterYRatio() * 100).toInt().toString())
-        val actStart = prefs.getActivityStartMin()
-        val actEnd = prefs.getActivityEndMin()
-        if (actStart >= 0) editActStart.setText(fmtMin(actStart))
-        if (actEnd >= 0) editActEnd.setText(fmtMin(actEnd))
-        // 固定位置（可手填的坐标）
-        if (prefs.hasBasePos()) {
-            editBaseX.setText(prefs.getBaseX().toString())
-            editBaseY.setText(prefs.getBaseY().toString())
-        }
-        editRadial.setText(prefs.getRadialRadius().toString())
-        editRangeLi.setText(prefs.getMaxAttackLi().toString())
-
-        btnStart.setOnClickListener { onStartClicked() }
-        btnCalib.setOnClickListener { onCalibClicked() }
-        btnPickBase.setOnClickListener { onPickBaseClicked() }
-        btnAcc.setOnClickListener {
+        findViewById<Button>(R.id.btn_acc).setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
-        btnMinus.setOnClickListener { changeTroopCount(-1) }
-        btnPlus.setOnClickListener { changeTroopCount(1) }
+        findViewById<Button>(R.id.btn_capture_bandit).setOnClickListener { startCaptureFlow(C.TPL_BANDIT) }
+        findViewById<Button>(R.id.btn_capture_attack).setOnClickListener { startCaptureFlow(C.TPL_ATTACK) }
+        findViewById<Button>(R.id.btn_capture_march).setOnClickListener { startCaptureFlow(C.TPL_MARCH) }
+        findViewById<Button>(R.id.btn_capture_confirm).setOnClickListener { startCaptureFlow(C.TPL_CONFIRM) }
+        findViewById<Button>(R.id.btn_capture_close).setOnClickListener { startCaptureFlow(C.TPL_CLOSE) }
+        findViewById<Button>(R.id.btn_capture_home).setOnClickListener { startCaptureFlow(C.TPL_HOME) }
 
-        val filter = IntentFilter(BanditAccessibilityService.ACTION_CALIB_DONE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(calibReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(calibReceiver, filter)
-        }
-        val ncFilter = IntentFilter(BanditAccessibilityService.ACTION_NEED_CAPTURE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(needCaptureReceiver, ncFilter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(needCaptureReceiver, ncFilter)
-        }
-        val bpFilter = IntentFilter(BanditAccessibilityService.ACTION_BASE_PICKED)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(basePickReceiver, bpFilter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(basePickReceiver, bpFilter)
-        }
-        showLastCrashIfAny()
-        ensureNotifPermission()
+        btnStart.setOnClickListener { startBotFlow() }
+
+        val cb = findViewById<CheckBox>(R.id.check_ocr)
+        cb.isChecked = prefs.ocrEnabled
+        cb.setOnCheckedChangeListener { _, isChecked -> prefs.ocrEnabled = isChecked }
+
+        // 回填已存参数
+        setText(R.id.edit_min_level, prefs.minLevel.toString())
+        setText(R.id.edit_max_level, prefs.maxLevel.toString())
+        setText(R.id.edit_stamina, prefs.staminaMin.toString())
+        setText(R.id.edit_max_cycle, prefs.maxCycle.toString())
+        setText(R.id.edit_threshold, prefs.matchThreshold.toString())
+        setText(R.id.edit_delay, prefs.baseDelayMs.toString())
+        setText(R.id.edit_sleep, prefs.sleepSec.toString())
     }
 
     override fun onResume() {
         super.onResume()
-        if (!::textStatus.isInitialized) return
         refreshStatus()
-        refreshTroopUi()
-        refreshBaseUi()
     }
 
-    // ---------------- 崩溃捕获（不再直接闪退，错误会保存并可查看） ----------------
-
-    private fun crashFile() = File(filesDir, "crash.log")
-
-    private fun installCrashHandler() {
-        val prev = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler { t, e ->
-            try { saveCrashLog(e) } catch (_: Exception) { }
-            prev?.uncaughtException(t, e)
-        }
-    }
-
-    private fun saveCrashLog(e: Throwable) {
-        try {
-            val time = java.text.SimpleDateFormat(
-                "MM-dd HH:mm:ss", java.util.Locale.CHINA
-            ).format(java.util.Date())
-            val log = buildString {
-                append("时间：").append(time)
-                append("\n错误类型：").append(e.javaClass.name)
-                append("\n错误信息：").append(e.message)
-                append("\n\n堆栈：\n")
-                append(android.util.Log.getStackTraceString(e))
-            }
-            crashFile().writeText(log)
-        } catch (_: Exception) { }
-    }
-
-    private fun showLastCrashIfAny() {
-        try {
-            val f = crashFile()
-            if (f.exists()) {
-                val logText = f.readText().take(2000)
-                findViewById<TextView>(R.id.text_crash).apply {
-                    visibility = View.VISIBLE
-                    text = "⚠ 上次运行出错（长按可复制，请发给开发者）：\n$logText"
-                }
-                f.delete()
-            }
-        } catch (_: Exception) { }
-    }
-
-    private fun showFatal(e: Throwable) {
-        try {
-            val tv = TextView(this)
-            tv.text = "启动出错：${e.javaClass.simpleName}\n${e.message}\n\n" +
-                "错误已保存，请重新打开本应用查看红字内容并截图发给开发者。"
-            tv.setPadding(48, 80, 48, 48)
-            setContentView(tv)
-        } catch (_: Exception) { }
-    }
-
-    private fun refreshBaseUi() {
-        if (!::textBase.isInitialized) return
-        textBase.text = if (prefs.hasBasePos()) {
-            "固定位置：已设置（${prefs.getBaseX()}, ${prefs.getBaseY()}）· 可手填，或点下方绿按钮在游戏里点选"
-        } else {
-            "固定位置：未设置（点下方绿按钮在游戏里点选，或手填 X,Y）"
-        }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        try {
-            unregisterReceiver(calibReceiver)
-        } catch (e: Exception) { /* ignore */ }
-        try {
-            unregisterReceiver(needCaptureReceiver)
-        } catch (e: Exception) { /* ignore */ }
-        try {
-            unregisterReceiver(basePickReceiver)
-        } catch (e: Exception) { /* ignore */ }
+    private fun setText(id: Int, s: String) {
+        findViewById<EditText>(id).setText(s)
     }
 
     private fun refreshStatus() {
-        val sb = StringBuilder()
-        if (!isAccessibilityEnabled()) {
-            sb.append("状态：❗请先开启「无障碍权限」")
+        val acc = isAccessibilityEnabled()
+        if (!acc) {
+            textStatus.text = "状态：❗请先点「开启无障碍权限」并在系统设置里启用本应用"
         } else {
-            sb.append("无障碍：✅  ")
-            sb.append(if (prefs.isCaptureReady()) "录屏：✅已授权  " else "录屏：❌未授权  ")
-            sb.append(if (prefs.isCalibrated()) "校准：✅" else "校准：❌")
+            val tpl = prefs.templateCount()
+            textStatus.text = "无障碍：✅  已采模板：$tpl/6  ${if (BotController.running) "运行中" else "待机"}"
         }
-        textStatus.text = sb.toString()
-        btnAcc.visibility = if (isAccessibilityEnabled()) View.GONE else View.VISIBLE
-    }
-
-    private fun refreshTroopUi() {
-        val max = prefs.getTroopPoints().size
-        if (max == 0) {
-            textTroop.text = "自选队伍：未校准（校准第 6 步设置，或直接用「全选」）"
-            return
-        }
-        var c = prefs.getTroopCount()
-        if (c <= 0) c = max
-        textTroop.text = "自选队伍：$c / $max"
-    }
-
-    private fun changeTroopCount(delta: Int) {
-        val max = prefs.getTroopPoints().size
-        if (max == 0) {
-            Toast.makeText(this, "还没校准自选队伍，请先点「② 校准」", Toast.LENGTH_SHORT).show()
-            return
-        }
-        var c = prefs.getTroopCount()
-        if (c <= 0) c = max
-        c = (c + delta).coerceIn(1, max)
-        prefs.setTroopCount(c)
-        refreshTroopUi()
+        btnStart.text = if (BotController.running) "⏸ 停止挂机" else "▶ 开始挂机"
     }
 
     private fun isAccessibilityEnabled(): Boolean {
-        val service = packageName + "/" + BanditAccessibilityService::class.java.canonicalName
+        val service = packageName + "/" + TapService::class.java.canonicalName
         val enabled = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         )
         return enabled?.contains(service) == true
     }
 
-    private fun ensureAccessibility(): Boolean {
-        if (isAccessibilityEnabled()) return true
-        Toast.makeText(this, "请先开启无障碍权限", Toast.LENGTH_LONG).show()
-        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        return false
-    }
-
-    private fun onStartClicked() {
-        if (!ensureAccessibility()) return
-        saveAdvanced()
-        if (prefs.isCaptureReady()) {
-            Toast.makeText(
-                this,
-                "已就绪。进游戏后点悬浮窗「开始」即挂机；点「锁盗匪」可校准按钮位置",
-                Toast.LENGTH_LONG
-            ).show()
+    private fun startBotFlow() {
+        if (BotController.running) {
+            BotController.stop()
             refreshStatus()
-        } else {
-            pendingAction = ACTION_START
-            launchCapture()
+            return
         }
+        if (!isAccessibilityEnabled()) {
+            Toast.makeText(this, "请先开启无障碍权限", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            return
+        }
+        if (prefs.templateCount() == 0) {
+            Toast.makeText(this, "请先采集至少一个模板（建议 6 个都采）", Toast.LENGTH_LONG).show()
+            return
+        }
+        saveParams()
+        BotController.captureService?.requestStop()
+        BotController.captureService = null
+        pendingAction = "bot"
+        handler.postDelayed({ launchCapture() }, 250)
     }
 
-    private fun onCalibClicked() {
-        if (!ensureAccessibility()) return
-        saveAdvanced()
-        pendingAction = ACTION_CALIBRATE
-        if (prefs.isCaptureReady()) {
-            sendService(BanditAccessibilityService.ACTION_CALIBRATE)
-            Toast.makeText(
-                this,
-                "切到游戏，按提示依次点：盗匪 → 讨伐 → 全选 → 确定",
-                Toast.LENGTH_LONG
-            ).show()
-        } else {
-            launchCapture()
+    private fun startCaptureFlow(tpl: String) {
+        if (!isAccessibilityEnabled()) {
+            Toast.makeText(this, "请先开启无障碍权限", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            return
         }
+        BotController.pendingTemplate = tpl
+        BotController.captureService?.requestStop()
+        BotController.captureService = null
+        pendingAction = "capture"
+        textHint.text = "采集「${C.TPL_LABELS[tpl]}」：授权后会浮出「📷截图」，去游戏把该按钮露出来后点它，框选保存即可。"
+        handler.postDelayed({ launchCapture() }, 250)
     }
 
-    /** 在游戏里点选「固定位置」，坐标即真实屏幕像素，与游戏/点击完全对齐且可重复修改 */
-    private fun onPickBaseClicked() {
-        if (!ensureAccessibility()) return
-        sendService(BanditAccessibilityService.ACTION_PICK_BASE)
-        Toast.makeText(
-            this,
-            "切到游戏，点一下你的固定位置（村庄/拉兵点），会自动填回这里",
-            Toast.LENGTH_LONG
-        ).show()
-    }
-
-    private fun saveAdvanced() {
-        val waitSec = editWait.text.toString().toLongOrNull()?.coerceIn(5, 120) ?: 20
-        prefs.setBattleWaitMs(waitSec * 1000)
-        val th = editThresh.text.toString().toIntOrNull()?.coerceIn(20, 120) ?: 55
-        prefs.setMatchThreshold(th)
-        val level = when (radioHuman.checkedRadioButtonId) {
-            R.id.rb_low -> 0
-            R.id.rb_high -> 2
-            else -> 1
-        }
-        prefs.setHumanizeLevel(level)
-
-        // 搜索方式
-        val scanMode = if (radioScan.checkedRadioButtonId == R.id.rb_scan_area) 1 else 0
-        if (scanMode == 1 && !prefs.hasBasePos()) {
-            Toast.makeText(this, "还没设置固定位置，请点「📍 在游戏里点选固定位置」", Toast.LENGTH_LONG).show()
-        } else {
-            prefs.setSearchMode(scanMode)
-        }
-        val radius = editRadius.text.toString().toIntOrNull()?.coerceIn(50, 100000) ?: 1000
-        prefs.setSearchRadiusLi(radius)
-        val lp = editLiPixel.text.toString().toFloatOrNull()?.coerceIn(0.2f, 50f) ?: 3f
-        prefs.setLiPixel(lp)
-
-        // 盗匪名称关键词（无障碍文字识别用）
-        val names = editBanditName.text.toString()
-            .split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-            .ifEmpty { Prefs.defaultBanditNames }
-        prefs.setBanditNameKeywords(names)
-        // 屏幕中心搜索范围（占屏比例，仅在「全屏搜索」关闭时生效）
-        val ratio = editCenterRatio.text.toString().toFloatOrNull()?.coerceIn(0.1f, 0.95f) ?: 0.48f
-        prefs.setCenterRadiusRatio(ratio)
-        // 全屏搜索开关
-        prefs.setFullScreenSearch(checkFullScreen.isChecked)
-        // 可修改的固定点（屏幕宽/高百分比，对应你拉兵的位置）
-        val cxPct = editCenterX.text.toString().toIntOrNull()?.coerceIn(0, 100) ?: 50
-        val cyPct = editCenterY.text.toString().toIntOrNull()?.coerceIn(0, 100) ?: 50
-        prefs.setSearchCenterXRatio(cxPct / 100f)
-        prefs.setSearchCenterYRatio(cyPct / 100f)
-        // 固定位置坐标（屏幕像素，可手填；校准第 1 步也会写这里）
-        val bx = editBaseX.text.toString().toIntOrNull()
-        val by = editBaseY.text.toString().toIntOrNull()
-        if (bx != null && by != null && bx >= 0 && by >= 0) {
-            prefs.setBaseX(bx); prefs.setBaseY(by)
-        } else if (editBaseX.text.isNullOrBlank() && editBaseY.text.isNullOrBlank()) {
-            prefs.clearBasePos()
-        }
-        // 放射菜单半径（按钮离盗匪多远，默认约 24px@1280，用户实测）
-        val rr = editRadial.text.toString().toIntOrNull()?.coerceIn(8, 400) ?: 24
-        prefs.setRadialRadius(rr)
-        // 攻击射程（里）：只打够得着的盗匪，0 = 不限制
-        val rangeLi = editRangeLi.text.toString().toIntOrNull()?.coerceIn(0, 100000) ?: 0
-        prefs.setMaxAttackLi(rangeLi)
-        // 盗匪名字标签 → 实体点击点 下移比例（点名落空时点不中盗匪，调大此值）
-        val noff = editNameOffset.text.toString().toFloatOrNull()?.coerceIn(0f, 0.3f) ?: 0.05f
-        prefs.setNameBodyOffsetRatio(noff)
-
-        // 等级筛选
-        val lv = if (radioLevel.checkedRadioButtonId == R.id.rb_level_only) 1 else 0
-        if (lv == 1 && !prefs.hasTemplate("level")) {
-            Toast.makeText(this, "还没校准等级标签，请先「校准」第 3 步", Toast.LENGTH_LONG).show()
-        } else {
-            prefs.setLevelOnly(lv == 1)
-        }
-
-        // 讨伐方式
-        prefs.setAttackMode(
-            if (radioMode.checkedRadioButtonId == R.id.rb_mode_battle) 1 else 0
-        )
-
-        // 活动时段
-        val sMin = parseHm(editActStart.text.toString())
-        val eMin = parseHm(editActEnd.text.toString())
-        if (sMin == null && eMin == null) {
-            prefs.setActivityStartMin(-1)
-            prefs.setActivityEndMin(-1)
-            prefs.setActivityOn(false)
-        } else if (sMin == null || eMin == null) {
-            Toast.makeText(this, "活动时段要同时填开始和结束时间", Toast.LENGTH_LONG).show()
-        } else {
-            prefs.setActivityStartMin(sMin)
-            prefs.setActivityEndMin(eMin)
-            prefs.setActivityOn(true)
-        }
-
-        // 找不到盗匪时的等待
-        val nb = editNoBandit.text.toString().toIntOrNull()?.coerceIn(5, 600) ?: 30
-        prefs.setNoBanditWaitSec(nb)
-
-        refreshStatus()
-        refreshTroopUi()
-    }
-
-    /** 把 "20:30" 解析成当天分钟数；解析不出来返回 null */
-    private fun parseHm(s: String): Int? {
-        val t = s.trim()
-        if (t.isEmpty()) return null
-        val p = t.split(":")
-        if (p.size != 2) return null
-        val h = p[0].trim().toIntOrNull() ?: return null
-        val m = p[1].trim().toIntOrNull() ?: return null
-        if (h !in 0..23 || m !in 0..59) return null
-        return h * 60 + m
-    }
-
-    private fun fmtMin(m: Int): String {
-        val h = m / 60
-        val mm = m % 60
-        return String.format("%02d:%02d", h, mm)
-    }
-
-    private fun trimFloat(v: Float): String {
-        val s = v.toString()
-        return if (s.endsWith(".0")) s.dropLast(2) else s
+    private fun saveParams() {
+        val min = findViewById<EditText>(R.id.edit_min_level).text.toString().toIntOrNull() ?: 1
+        val max = findViewById<EditText>(R.id.edit_max_level).text.toString().toIntOrNull() ?: 99
+        val sta = findViewById<EditText>(R.id.edit_stamina).text.toString().toIntOrNull() ?: 20
+        val cyc = findViewById<EditText>(R.id.edit_max_cycle).text.toString().toIntOrNull() ?: 30
+        val th = findViewById<EditText>(R.id.edit_threshold).text.toString().toFloatOrNull() ?: 0.8f
+        val dl = findViewById<EditText>(R.id.edit_delay).text.toString().toLongOrNull() ?: 1200L
+        val sl = findViewById<EditText>(R.id.edit_sleep).text.toString().toIntOrNull() ?: 300
+        prefs.minLevel = min
+        prefs.maxLevel = max
+        prefs.staminaMin = sta
+        prefs.maxCycle = cyc
+        prefs.matchThreshold = th
+        prefs.baseDelayMs = dl
+        prefs.sleepSec = sl
     }
 
     private fun launchCapture() {
@@ -583,41 +150,29 @@ class MainActivity : AppCompatActivity() {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProj.launch(mpm.createScreenCaptureIntent())
         } catch (e: Exception) {
-            Toast.makeText(this, "无法申请录屏授权：$e", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "无法申请录屏：$e", Toast.LENGTH_LONG).show()
         }
     }
 
-    /** 把录屏授权结果交给无障碍服务 */
-    private fun sendCaptureToService(resultCode: Int, data: Intent) {
-        val capture = Intent(this, BanditAccessibilityService::class.java).apply {
-            action = BanditAccessibilityService.ACTION_START_CAPTURE
-            putExtra("result_code", resultCode)
-            putExtra("data", data)
+    private fun launchService(resultCode: Int, data: Intent) {
+        val intent = Intent(this, CaptureService::class.java).apply {
+            action = if (pendingAction == "bot") C.ACTION_START else C.ACTION_CAPTURE
+            if (pendingAction == "capture") {
+                putExtra(C.EXTRA_TPL, BotController.pendingTemplate ?: C.TPL_BANDIT)
+            }
+            putExtra(C.EXTRA_RESULT_CODE, resultCode)
+            putExtra(C.EXTRA_DATA, data)
         }
         try {
-            startService(capture)
+            startService(intent)
+            if (pendingAction == "bot") {
+                Toast.makeText(this, "已启动，进游戏即可挂机（悬浮窗可停止）", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(this, "采集模式已开启，去游戏点悬浮「📷截图」", Toast.LENGTH_LONG).show()
+            }
+            refreshStatus()
         } catch (e: Exception) {
-            Toast.makeText(this, "服务启动失败：$e", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "启动失败：$e", Toast.LENGTH_LONG).show()
         }
-    }
-
-    private fun sendService(action: String) {
-        val i = Intent(this, BanditAccessibilityService::class.java).apply {
-            this.action = action
-        }
-        try {
-            startService(i)
-        } catch (e: Exception) {
-            Toast.makeText(this, "服务启动失败：$e", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private fun handlerPost(block: () -> Unit) {
-        mainHandler.post { block() }
-    }
-
-    companion object {
-        private const val ACTION_START = "start"
-        private const val ACTION_CALIBRATE = "calibrate"
     }
 }

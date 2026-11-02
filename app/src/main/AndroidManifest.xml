@@ -25,11 +25,20 @@
             </intent-filter>
         </activity>
 
-        <service
-            android:name=".BanditAccessibilityService"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+        <activity
+            android:name=".CropActivity"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection">
+            android:screenOrientation="portrait" />
+
+        <service
+            android:name=".CaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <service
+            android:name=".TapService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>

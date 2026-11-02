@@ -11,8 +11,8 @@ android {
         applicationId "com.example.daqinbandithelper"
         minSdk 24
         targetSdk 34
-        versionCode 29
-        versionName "3.9"
+        versionCode 40
+        versionName "4.0"
     }
 
     buildTypes {
@@ -28,9 +28,6 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
-    buildFeatures {
-        viewBinding true
-    }
 }
 
 dependencies {
@@ -38,4 +35,6 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    // 模板匹配用纯 Kotlin NCC 实现，零原生依赖；OCR 用 ML Kit（默认关闭、可降级）
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
 }
