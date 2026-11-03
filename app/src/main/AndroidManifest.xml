@@ -30,6 +30,11 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
+        <activity
+            android:name=".TemplateTestActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
         <service
             android:name=".CaptureService"
             android:exported="false"

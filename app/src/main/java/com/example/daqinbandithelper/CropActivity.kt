@@ -128,9 +128,18 @@ class CropActivity : AppCompatActivity() {
         val name = tpl ?: C.TPL_BANDIT
         prefs.saveTemplate(name, cropped)
         val d = detailScore(sr)
+        // 自测：用刚截的整图去匹配这张模板，分数应接近 1.0；偏低说明截歪/截错
+        val self = try {
+            TemplateMatcher.match(bmp!!, cropped, 0f)
+        } catch (_: Exception) { null }
         cropped.recycle()
-        Diag.log("模板", "保存 ${C.TPL_LABELS[name] ?: name} ${bw}×${bh}px 细节=${"%.0f".format(d)}")
-        val warn = if (d < 8f) "（细节偏低，可能匹配不到）" else ""
+        val selfScore = self?.score ?: -1f
+        Diag.log("模板", "保存 ${C.TPL_LABELS[name] ?: name} ${bw}×${bh}px 细节=${"%.0f".format(d)} 自测分=${"%.2f".format(selfScore)}")
+        val warn = when {
+            selfScore in 0.0f..0.6f -> "（自测分仅 ${"%.2f".format(selfScore)}，可能没截中目标，建议重截）"
+            d < 8f -> "（细节偏低，可能匹配不到）"
+            else -> ""
+        }
         Toast.makeText(this, "已保存「${C.TPL_LABELS[name] ?: name}」${bw}×${bh}px$warn", Toast.LENGTH_SHORT).show()
         finish()
     }

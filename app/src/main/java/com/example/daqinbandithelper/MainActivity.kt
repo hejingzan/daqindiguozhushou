@@ -99,6 +99,10 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "无法打开相册：${e.message}", Toast.LENGTH_LONG).show()
             }
         }
+        findViewById<Button>(R.id.btn_template_test).setOnClickListener {
+            Diag.log("界面", "打开模板测试")
+            startActivity(Intent(this, TemplateTestActivity::class.java))
+        }
         findViewById<Button>(R.id.btn_diag_clear).setOnClickListener {
             Diag.clear()
             refreshDiag()

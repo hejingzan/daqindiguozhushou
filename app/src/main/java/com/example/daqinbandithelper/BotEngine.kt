@@ -104,7 +104,11 @@ class BotEngine(private val ctx: android.content.Context) {
             notFound++
             val t = onMiss()
             if (notFound > 12) {
-                status("S1 连续 $notFound 次未找到盗匪(最高分=${"%.2f".format(m.score)}，阈值=${"%.2f".format(t)})，进入休眠")
+                val hint = if (m.score < 0.5)
+                    "盗匪模板最高分仅 ${"%.2f".format(m.score)}（远低于阈值），多半是模板没截好/缩放下不一致。请回主界面用【模板测试】截一张游戏里盗匪的图，看红框是否框中盗匪；没框中就重截「盗匪图标」。"
+                else
+                    "盗匪模板最高分 ${"%.2f".format(m.score)} 仍低于阈值 ${"%.2f".format(t)}，可略微调低『匹配阈值』参数后重试。"
+                status("S1 连续 $notFound 次未找到盗匪。$hint")
                 state = C.S6_SLEEP
             } else {
                 randomDrag("S1 未命中 best=${"%.2f".format(m.score)} thr=${"%.2f".format(t)} 拖动地图刷新 ($notFound)")

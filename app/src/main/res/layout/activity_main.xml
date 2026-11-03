@@ -96,6 +96,14 @@
             android:layout_marginTop="6dp"
             android:backgroundTint="#1565C0" />
 
+        <Button
+            android:id="@+id/btn_template_test"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="🖼 模板测试（看红框是否框中目标）"
+            android:layout_marginTop="6dp"
+            android:backgroundTint="#6A1B9A" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
