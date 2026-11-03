@@ -1,5 +1,6 @@
 package com.example.daqinbandithelper
 
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -93,12 +94,12 @@ class CaptureService : Service() {
     }
 
     private fun startBot(intent: Intent) {
-        val rc = intent.getIntExtra(C.EXTRA_RESULT_CODE, -1)
+        val rc = intent.getIntExtra(C.EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
         val data = intent.getParcelableExtra<Intent>(C.EXTRA_DATA)
-        Diag.log("服务", "startBot rc=$rc data=${data != null}")
-        if (rc < 0 || data == null) {
-            Diag.log("服务", "缺少录屏授权参数，已停止")
-            Toast.makeText(this, "缺少录屏授权参数，已停止", Toast.LENGTH_LONG).show()
+        Diag.log("服务", "startBot rc=$rc(OK=${Activity.RESULT_OK}) data=${data != null}")
+        if (rc != Activity.RESULT_OK || data == null) {
+            Diag.log("服务", "录屏授权无效（rc=$rc），已停止")
+            Toast.makeText(this, "录屏授权无效（rc=$rc），已停止", Toast.LENGTH_LONG).show()
             requestStop()
             return
         }
@@ -118,12 +119,12 @@ class CaptureService : Service() {
     }
 
     private fun startCapture(intent: Intent) {
-        val rc = intent.getIntExtra(C.EXTRA_RESULT_CODE, -1)
+        val rc = intent.getIntExtra(C.EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
         val data = intent.getParcelableExtra<Intent>(C.EXTRA_DATA)
-        Diag.log("服务", "startCapture rc=$rc data=${data != null} tpl=${BotController.pendingTemplate}")
-        if (rc < 0 || data == null) {
-            Diag.log("服务", "缺少录屏授权参数，已停止")
-            Toast.makeText(this, "缺少录屏授权参数，已停止", Toast.LENGTH_LONG).show()
+        Diag.log("服务", "startCapture rc=$rc(OK=${Activity.RESULT_OK}) data=${data != null} tpl=${BotController.pendingTemplate}")
+        if (rc != Activity.RESULT_OK || data == null) {
+            Diag.log("服务", "录屏授权无效（rc=$rc），已停止")
+            Toast.makeText(this, "录屏授权无效（rc=$rc），已停止", Toast.LENGTH_LONG).show()
             requestStop()
             return
         }
