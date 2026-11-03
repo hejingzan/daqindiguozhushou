@@ -2,32 +2,63 @@ package com.example.daqinbandithelper
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.media.projection.MediaProjectionManager
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: Prefs
     private lateinit var textStatus: TextView
     private lateinit var textHint: TextView
+    private lateinit var textDiag: TextView
     private lateinit var btnStart: Button
+    private lateinit var spinnerTpl: Spinner
     private val handler = Handler(Looper.getMainLooper())
     private var pendingAction = ""  // "bot" | "capture"
 
     private val mediaProj = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        Diag.log("录屏", "回调 resultCode=${result.resultCode} data=${result.data != null}")
         if (result.resultCode == RESULT_OK && result.data != null) {
             launchService(result.resultCode, result.data!!)
         } else {
+            Diag.log("录屏", "用户未授权录屏")
             Toast.makeText(this, "未授权录屏，无法继续", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** 从相册导入模板：完全不需要录屏权限与悬浮窗，最稳的采模板方式 */
+    private val pickImage = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri == null) {
+            Diag.log("导入", "用户取消选择")
+            return@registerForActivityResult
+        }
+        val tpl = currentTpl()
+        try {
+            val f = File(filesDir, "shot_tmp.png")
+            contentResolver.openInputStream(uri)?.use { ins ->
+                f.outputStream().use { outs -> ins.copyTo(outs) }
+            }
+            Diag.log("导入", "已读取图片，准备裁剪：${C.TPL_LABELS[tpl]}")
+            startActivity(Intent(this, CropActivity::class.java).apply {
+                putExtra("path", f.absolutePath)
+                putExtra(C.EXTRA_TPL, tpl)
+            })
+        } catch (e: Exception) {
+            Diag.log("导入", "失败：${e.javaClass.simpleName}: ${e.message}")
+            Toast.makeText(this, "导入失败：${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -37,9 +68,17 @@ class MainActivity : AppCompatActivity() {
         prefs = Prefs(this)
         textStatus = findViewById(R.id.text_status)
         textHint = findViewById(R.id.text_hint)
+        textDiag = findViewById(R.id.text_diag)
         btnStart = findViewById(R.id.btn_start)
+        spinnerTpl = findViewById(R.id.spinner_tpl)
+
+        spinnerTpl.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item,
+            C.TPL_ORDER.map { C.TPL_LABELS[it] ?: it }
+        )
 
         findViewById<Button>(R.id.btn_acc).setOnClickListener {
+            Diag.log("界面", "打开无障碍设置")
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
         findViewById<Button>(R.id.btn_capture_bandit).setOnClickListener { startCaptureFlow(C.TPL_BANDIT) }
@@ -48,6 +87,20 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btn_capture_confirm).setOnClickListener { startCaptureFlow(C.TPL_CONFIRM) }
         findViewById<Button>(R.id.btn_capture_close).setOnClickListener { startCaptureFlow(C.TPL_CLOSE) }
         findViewById<Button>(R.id.btn_capture_home).setOnClickListener { startCaptureFlow(C.TPL_HOME) }
+
+        findViewById<Button>(R.id.btn_import_gallery).setOnClickListener {
+            Diag.log("界面", "从相册导入模板：${C.TPL_LABELS[currentTpl()]}")
+            try {
+                pickImage.launch("image/*")
+            } catch (e: Exception) {
+                Diag.log("导入", "无法打开相册：${e.message}")
+                Toast.makeText(this, "无法打开相册：${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+        findViewById<Button>(R.id.btn_diag_clear).setOnClickListener {
+            Diag.clear()
+            refreshDiag()
+        }
 
         btnStart.setOnClickListener { startBotFlow() }
 
@@ -63,11 +116,40 @@ class MainActivity : AppCompatActivity() {
         setText(R.id.edit_threshold, prefs.matchThreshold.toString())
         setText(R.id.edit_delay, prefs.baseDelayMs.toString())
         setText(R.id.edit_sleep, prefs.sleepSec.toString())
+
+        Diag.log("界面", "App 启动，系统=${Build.VERSION.RELEASE} SDK=${Build.VERSION.SDK_INT}")
     }
 
     override fun onResume() {
         super.onResume()
         refreshStatus()
+        handler.post(diagTicker)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        handler.removeCallbacks(diagTicker)
+    }
+
+    private val diagTicker = object : Runnable {
+        override fun run() {
+            refreshDiag()
+            handler.postDelayed(this, 1000)
+        }
+    }
+
+    private fun refreshDiag() {
+        try { textDiag.text = Diag.text() } catch (_: Exception) {}
+    }
+
+    private fun currentTpl(): String {
+        val idx = spinnerTpl.selectedItemPosition
+        return C.TPL_ORDER.getOrNull(idx) ?: C.TPL_BANDIT
+    }
+
+    private fun selectTpl(name: String) {
+        val idx = C.TPL_ORDER.indexOf(name)
+        if (idx >= 0) spinnerTpl.setSelection(idx)
     }
 
     private fun setText(id: Int, s: String) {
@@ -76,11 +158,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshStatus() {
         val acc = isAccessibilityEnabled()
-        if (!acc) {
-            textStatus.text = "状态：❗请先点「开启无障碍权限」并在系统设置里启用本应用"
-        } else {
-            val tpl = prefs.templateCount()
-            textStatus.text = "无障碍：✅  已采模板：$tpl/6  ${if (BotController.running) "运行中" else "待机"}"
+        val tapReady = TapService.instance != null
+        val tpl = prefs.templateCount()
+        textStatus.text = buildString {
+            append("无障碍设置：")
+            append(if (acc) "✅" else "❌")
+            append("  无障碍服务实例：")
+            append(if (tapReady) "✅" else "❌未连接")
+            append("\n已采模板：$tpl/6   ")
+            append(if (BotController.running) "运行中" else "待机")
         }
         btnStart.text = if (BotController.running) "⏸ 停止挂机" else "▶ 开始挂机"
     }
@@ -95,16 +181,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun startBotFlow() {
         if (BotController.running) {
+            Diag.log("界面", "点击停止挂机")
             BotController.stop()
             refreshStatus()
             return
         }
         if (!isAccessibilityEnabled()) {
+            Diag.log("界面", "未开启无障碍，终止")
             Toast.makeText(this, "请先开启无障碍权限", Toast.LENGTH_LONG).show()
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             return
         }
         if (prefs.templateCount() == 0) {
+            Diag.log("界面", "模板数为 0，终止")
             Toast.makeText(this, "请先采集至少一个模板（建议 6 个都采）", Toast.LENGTH_LONG).show()
             return
         }
@@ -116,7 +205,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startCaptureFlow(tpl: String) {
+        selectTpl(tpl)
         if (!isAccessibilityEnabled()) {
+            Diag.log("界面", "未开启无障碍，终止采集")
             Toast.makeText(this, "请先开启无障碍权限", Toast.LENGTH_LONG).show()
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             return
@@ -125,7 +216,9 @@ class MainActivity : AppCompatActivity() {
         BotController.captureService?.requestStop()
         BotController.captureService = null
         pendingAction = "capture"
-        textHint.text = "采集「${C.TPL_LABELS[tpl]}」：授权后会浮出「📷截图」，去游戏把该按钮露出来后点它，框选保存即可。"
+        textHint.text = "采集「${C.TPL_LABELS[tpl]}」：授权后左上角应浮出「📷截图」。\n" +
+            "若没浮出，请改用下方「📥 从相册导入」（游戏里按系统截图键截图，再选该图片即可）。"
+        Diag.log("界面", "开始采集模板 $tpl")
         handler.postDelayed({ launchCapture() }, 250)
     }
 
@@ -149,15 +242,18 @@ class MainActivity : AppCompatActivity() {
     private fun launchCapture() {
         try {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            Diag.log("录屏", "弹出系统录屏授权")
             mediaProj.launch(mpm.createScreenCaptureIntent())
         } catch (e: Exception) {
+            Diag.log("录屏", "申请失败：${e.javaClass.simpleName}: ${e.message}")
             Toast.makeText(this, "无法申请录屏：$e", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun launchService(resultCode: Int, data: Intent) {
+        val action = if (pendingAction == "bot") C.ACTION_START else C.ACTION_CAPTURE
         val intent = Intent(this, CaptureService::class.java).apply {
-            action = if (pendingAction == "bot") C.ACTION_START else C.ACTION_CAPTURE
+            this.action = action
             if (pendingAction == "capture") {
                 putExtra(C.EXTRA_TPL, BotController.pendingTemplate ?: C.TPL_BANDIT)
             }
@@ -165,14 +261,21 @@ class MainActivity : AppCompatActivity() {
             putExtra(C.EXTRA_DATA, data)
         }
         try {
-            startService(intent)
+            // Android 8+ 需用 startForegroundService，否则退到后台后服务会被回收
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            Diag.log("服务", "已请求启动 action=$action")
             if (pendingAction == "bot") {
-                Toast.makeText(this, "已启动，进游戏即可挂机（悬浮窗可停止）", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "已启动，进游戏即可挂机", Toast.LENGTH_LONG).show()
             } else {
                 Toast.makeText(this, "采集模式已开启，去游戏点悬浮「📷截图」", Toast.LENGTH_LONG).show()
             }
             refreshStatus()
         } catch (e: Exception) {
+            Diag.log("服务", "启动失败：${e.javaClass.simpleName}: ${e.message}")
             Toast.makeText(this, "启动失败：$e", Toast.LENGTH_LONG).show()
         }
     }

@@ -68,7 +68,36 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="三、参数设置"
+            android:text="★ 备用通路：从相册导入（不需要录屏和悬浮窗）"
+            android:textStyle="bold"
+            android:textSize="14sp"
+            android:layout_marginTop="14dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="① 在游戏里用系统截图键截屏并存到相册　② 选好下面的模板　③ 点「从相册导入」，在图上框选保存"
+            android:textSize="12sp"
+            android:layout_marginTop="4dp" />
+
+        <Spinner
+            android:id="@+id/spinner_tpl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" />
+
+        <Button
+            android:id="@+id/btn_import_gallery"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="📥 从相册导入模板"
+            android:layout_marginTop="6dp"
+            android:backgroundTint="#1565C0" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="四、参数设置"
             android:textStyle="bold"
             android:textSize="15sp"
             android:layout_marginTop="12dp" />
@@ -124,6 +153,34 @@
             android:textSize="11sp"
             android:textColor="#C62828"
             android:layout_marginTop="10dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="五、运行诊断（出问题时截图这一块发我）"
+            android:textStyle="bold"
+            android:textSize="15sp"
+            android:layout_marginTop="14dp" />
+
+        <Button
+            android:id="@+id/btn_diag_clear"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="清空日志"
+            android:textSize="12sp"
+            android:layout_marginTop="6dp" />
+
+        <TextView
+            android:id="@+id/text_diag"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="(暂无日志)"
+            android:textSize="11sp"
+            android:textColor="#B9F6CA"
+            android:background="#102027"
+            android:padding="8dp"
+            android:layout_marginTop="6dp"
+            android:typeface="monospace" />
 
     </LinearLayout>
 </ScrollView>

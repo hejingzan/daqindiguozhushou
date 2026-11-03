@@ -29,12 +29,21 @@ class TapService : AccessibilityService() {
     private var tvStatus: TextView? = null
     private var wm: WindowManager? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        // 早于 onServiceConnected 先挂上，避免此刻发起调用时 instance 还是 null
+        instance = this
+        Diag.log("无障碍", "服务 onCreate")
+    }
+
     override fun onServiceConnected() {
         instance = this
+        Diag.log("无障碍", "服务已连接")
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
         instance = null
+        Diag.log("无障碍", "服务已断开")
         hideOverlay()
         return false
     }
@@ -43,10 +52,11 @@ class TapService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    fun showOverlay(status: String) {
+    /** 显示无障碍浮层。返回 false 表示没挂上（调用方需回退到其它方式）。 */
+    fun showOverlay(status: String): Boolean {
         if (overlayView != null) {
             setStatus(status)
-            return
+            return true
         }
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val inflater = getSystemService(Context.LAYOUT_INFLATER_SERVICE) as LayoutInflater
@@ -66,12 +76,18 @@ class TapService : AccessibilityService() {
             PixelFormat.TRANSLUCENT
         )
         params.gravity = Gravity.TOP or Gravity.START
-        try {
+        return try {
             wm!!.addView(overlayView, params)
+            Diag.log("浮层", "无障碍浮层已挂上")
+            setStatus(status)
+            true
         } catch (e: Exception) {
             Log.e("TapService", "add overlay failed", e)
+            Diag.log("浮层", "无障碍浮层挂载失败：${e.javaClass.simpleName}: ${e.message}")
+            overlayView = null
+            tvStatus = null
+            false
         }
-        setStatus(status)
     }
 
     fun setStatus(s: String) {

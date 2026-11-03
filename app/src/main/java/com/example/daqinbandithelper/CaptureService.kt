@@ -95,13 +95,16 @@ class CaptureService : Service() {
     private fun startBot(intent: Intent) {
         val rc = intent.getIntExtra(C.EXTRA_RESULT_CODE, -1)
         val data = intent.getParcelableExtra<Intent>(C.EXTRA_DATA)
+        Diag.log("服务", "startBot rc=$rc data=${data != null}")
         if (rc < 0 || data == null) {
+            Diag.log("服务", "缺少录屏授权参数，已停止")
+            Toast.makeText(this, "缺少录屏授权参数，已停止", Toast.LENGTH_LONG).show()
             requestStop()
             return
         }
         prefs = Prefs(this)
         startForegroundSafe()
-        initProjection(rc, data)
+        val ok = initProjectionSafe(rc, data)
         engine = BotEngine(this)
         running = true
         mode = MODE_BOT
@@ -110,26 +113,46 @@ class CaptureService : Service() {
         BotController.captureMode = false
         engine?.setStatusCallback { s -> setStatus(s) }
         overlayRetry = 0
-        showOverlay("挂机中…（点击停止可结束）")
-        scheduleLoop()
+        showOverlay(if (ok) "挂机中…（点击停止可结束）" else "⚠ 录屏失败，请看下方日志")
+        if (ok) scheduleLoop()
     }
 
     private fun startCapture(intent: Intent) {
         val rc = intent.getIntExtra(C.EXTRA_RESULT_CODE, -1)
         val data = intent.getParcelableExtra<Intent>(C.EXTRA_DATA)
+        Diag.log("服务", "startCapture rc=$rc data=${data != null} tpl=${BotController.pendingTemplate}")
         if (rc < 0 || data == null) {
+            Diag.log("服务", "缺少录屏授权参数，已停止")
+            Toast.makeText(this, "缺少录屏授权参数，已停止", Toast.LENGTH_LONG).show()
             requestStop()
             return
         }
         prefs = Prefs(this)
         startForegroundSafe()
-        initProjection(rc, data)
+        val ok = initProjectionSafe(rc, data)
         running = true
         mode = MODE_CAPTURE
         BotController.captureService = this
         BotController.captureMode = true
         overlayRetry = 0
-        showOverlay("采集模式：去游戏点「📷截图」")
+        showOverlay(if (ok) "采集模式：去游戏点「📷截图」" else "⚠ 录屏初始化失败，请看下方日志")
+    }
+
+    /** 初始化投影；任何异常都记录到诊断日志并提示，绝不让服务静默崩溃。 */
+    private fun initProjectionSafe(rc: Int, data: Intent): Boolean {
+        return try {
+            initProjection(rc, data)
+            Diag.log("录屏", "投影初始化成功 ${w}x$h")
+            true
+        } catch (e: Exception) {
+            Diag.log("录屏", "投影初始化失败：${e.javaClass.simpleName}: ${e.message}")
+            Log.e("CaptureService", "initProjection failed", e)
+            try {
+                Toast.makeText(this, "录屏初始化失败：${e.message}", Toast.LENGTH_LONG).show()
+            } catch (_: Exception) {
+            }
+            false
+        }
     }
 
     private fun initProjection(rc: Int, data: Intent) {
@@ -138,7 +161,9 @@ class CaptureService : Service() {
             handler = Handler(handlerThread.looper)
         }
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        Diag.log("录屏", "getMediaProjection…")
         mediaProjection = mpm.getMediaProjection(rc, data)
+        if (mediaProjection == null) throw IllegalStateException("getMediaProjection 返回 null")
         val dm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val size = Point()
         dm.defaultDisplay.getRealSize(size)
@@ -150,14 +175,17 @@ class CaptureService : Service() {
         )
         mediaProjection?.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
+                Diag.log("录屏", "MediaProjection 被系统停止")
                 handler.post { requestStop() }
             }
         }, handler)
+        Diag.log("录屏", "创建 VirtualDisplay…")
         virtualDisplay = mediaProjection?.createVirtualDisplay(
             "daqin", w, h, density,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader?.surface, null, null
         )
+        if (virtualDisplay == null) throw IllegalStateException("createVirtualDisplay 返回 null")
     }
 
     private fun scheduleLoop() {
@@ -205,13 +233,23 @@ class CaptureService : Service() {
     /** 采集模式：截一张图保存到临时文件并打开裁图界面 */
     fun shoot() {
         try {
-            val img = imageReader?.acquireLatestImage() ?: return
+            Diag.log("采集", "收到截图指令")
+            val img = imageReader?.acquireLatestImage()
+            if (img == null) {
+                Diag.log("采集", "取帧失败：imageReader 为空或无新帧")
+                Toast.makeText(this, "取帧失败，请稍后再试", Toast.LENGTH_SHORT).show()
+                return
+            }
             val bmp = imageToBitmap(img)
             img.close()
-            if (bmp == null) return
+            if (bmp == null) {
+                Diag.log("采集", "位图转换失败")
+                return
+            }
             val f = java.io.File(filesDir, "shot_tmp.png")
             f.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
             bmp.recycle()
+            Diag.log("采集", "已截图 ${f.absolutePath}")
             val i = Intent(this, CropActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 putExtra("path", f.absolutePath)
@@ -219,6 +257,7 @@ class CaptureService : Service() {
             }
             startActivity(i)
         } catch (e: Exception) {
+            Diag.log("采集", "截图异常：${e.javaClass.simpleName}: ${e.message}")
             Log.e("CaptureService", "shoot error", e)
         }
     }
@@ -230,34 +269,41 @@ class CaptureService : Service() {
      *  2) 无障碍暂不可用时回退到本服务自己的 TYPE_APPLICATION_OVERLAY；
      *  3) 两者都失败时延迟重试（服务可能正在连接），仍失败则弹明确提示，绝不静默。 */
     fun showOverlay(status: String) {
-        // 1) 优先无障碍浮层
+        // 1) 优先无障碍浮层（OEM 不拦截、且本应用已强制要求开启无障碍，最可靠）
         val a11y = TapService.instance
         if (a11y != null) {
             try {
-                a11y.showOverlay(status)
-                overlayRetry = 0
-                return
+                if (a11y.showOverlay(status)) {
+                    Diag.log("浮层", "使用无障碍浮层")
+                    overlayRetry = 0
+                    return
+                }
             } catch (e: Exception) {
-                Log.e("CaptureService", "a11y overlay failed, fallback to own overlay", e)
+                Diag.log("浮层", "无障碍浮层异常：${e.javaClass.simpleName}: ${e.message}")
             }
+        } else {
+            Diag.log("浮层", "无障碍服务实例为空（未连接）")
         }
-        // 2) 回退：本服务自己的浮层
+        // 2) 回退：本服务自己的浮层（需"显示在其他应用上"权限，部分国产 ROM 会拦截）
         try {
             ensureOverlay()
             setStatus(status)
             try { TapService.instance?.hideOverlay() } catch (_: Exception) {}
             overlayRetry = 0
+            Diag.log("浮层", "使用应用自身浮层")
             return
         } catch (e: Exception) {
-            Log.e("CaptureService", "own overlay also failed", e)
+            Diag.log("浮层", "应用自身浮层失败：${e.javaClass.simpleName}: ${e.message}")
         }
         // 3) 两者都失败：可能是无障碍服务刚启用尚未连接，延迟重试
         if (overlayRetry < 6) {
             overlayRetry++
+            Diag.log("浮层", "第 $overlayRetry 次重试")
             uiHandler.postDelayed({ showOverlay(status) }, 700)
             return
         }
         // 最终失败：明确提示，不再静默
+        Diag.log("浮层", "全部失败，提示用户")
         try {
             Toast.makeText(
                 this,
@@ -376,7 +422,9 @@ class CaptureService : Service() {
             } else {
                 startForeground(C.NOTIF_ID, notif)
             }
+            Diag.log("服务", "前台服务已启动")
         } catch (e: Exception) {
+            Diag.log("服务", "startForeground 失败：${e.javaClass.simpleName}: ${e.message}")
             Log.e("CaptureService", "startForeground failed (continuing)", e)
         }
     }

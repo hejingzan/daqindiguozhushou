@@ -37,6 +37,7 @@ class BotEngine(private val ctx: android.content.Context) {
     private fun status(s: String) {
         statusCb?.invoke(s)
         TapService.instance?.setStatus(s)
+        Diag.log("状态机", s)
     }
 
     fun processFrame(bmp: Bitmap) {
