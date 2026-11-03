@@ -11,6 +11,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 需要 contents 写权限，以便把构建出的 APK 通过 api.github.com 写回仓库
+    permissions:
+      contents: write
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
@@ -28,9 +31,42 @@ jobs:
           gradle-version: 8.5
           arguments: assembleDebug
 
-      - name: 上传 APK 产物
+      - name: 上传 APK 产物（GitHub 界面可见）
         uses: actions/upload-artifact@v4
         with:
           name: daqin-bandit-helper-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # 经 api.github.com 把 APK 写回仓库（绕过 Azure 产物下载被代理拦截的问题）
+      - name: 发布 APK 到仓库（api.github.com）
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          export APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          echo "APK: $APK"
+          python3 - <<'PY'
+          import base64, json, os, urllib.request
+          token = os.environ['TOKEN']; repo = os.environ['REPO']; apk = os.environ['APK']
+          with open(apk, 'rb') as f:
+              b64 = base64.b64encode(f.read()).decode()
+          sha = ''
+          try:
+              req = urllib.request.Request(f"https://api.github.com/repos/{repo}/contents/apk_release/app-debug-v4.0.apk")
+              req.add_header("Authorization", f"Bearer {token}")
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  sha = json.load(r).get('sha', '')
+          except Exception as e:
+              print("no existing file (first upload):", e)
+          data = {"message": "ci: publish debug APK", "content": b64}
+          if sha:
+              data["sha"] = sha
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/apk_release/app-debug-v4.0.apk",
+              data=json.dumps(data).encode(), method="PUT")
+          req.add_header("Authorization", f"Bearer {token}")
+          req.add_header("Content-Type", "application/json")
+          with urllib.request.urlopen(req, timeout=300) as r:
+              print("upload status:", r.status)
+          PY
