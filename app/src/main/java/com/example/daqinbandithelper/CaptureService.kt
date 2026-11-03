@@ -20,6 +20,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.os.IBinder
 import android.provider.Settings
 import android.util.Log
@@ -63,6 +64,10 @@ class CaptureService : Service() {
     private var tvStatus: TextView? = null
     private var wm: WindowManager? = null
 
+    // 主线程 handler：用于浮层重试（WindowManager 操作需在带 Looper 的线程）
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private var overlayRetry = 0
+
     companion object {
         private const val MODE_IDLE = 0
         private const val MODE_BOT = 1
@@ -104,6 +109,7 @@ class CaptureService : Service() {
         BotController.running = true
         BotController.captureMode = false
         engine?.setStatusCallback { s -> setStatus(s) }
+        overlayRetry = 0
         showOverlay("挂机中…（点击停止可结束）")
         scheduleLoop()
     }
@@ -122,6 +128,7 @@ class CaptureService : Service() {
         mode = MODE_CAPTURE
         BotController.captureService = this
         BotController.captureMode = true
+        overlayRetry = 0
         showOverlay("采集模式：去游戏点「📷截图」")
     }
 
@@ -218,25 +225,43 @@ class CaptureService : Service() {
 
     // ===================== 自带悬浮控制窗 =====================
 
-    /** 显示悬浮控制窗：优先用本服务自己的 TYPE_APPLICATION_OVERLAY，
-     *  失败再回退到无障碍服务的浮层；都不行则提示用户授权。 */
+    /** 显示悬浮控制窗：
+     *  1) 优先用无障碍服务的 TYPE_ACCESSIBILITY_OVERLAY（OEM 不拦截、且本应用已强制要求开启无障碍，最可靠）；
+     *  2) 无障碍暂不可用时回退到本服务自己的 TYPE_APPLICATION_OVERLAY；
+     *  3) 两者都失败时延迟重试（服务可能正在连接），仍失败则弹明确提示，绝不静默。 */
     fun showOverlay(status: String) {
+        // 1) 优先无障碍浮层
+        val a11y = TapService.instance
+        if (a11y != null) {
+            try {
+                a11y.showOverlay(status)
+                overlayRetry = 0
+                return
+            } catch (e: Exception) {
+                Log.e("CaptureService", "a11y overlay failed, fallback to own overlay", e)
+            }
+        }
+        // 2) 回退：本服务自己的浮层
         try {
             ensureOverlay()
             setStatus(status)
+            try { TapService.instance?.hideOverlay() } catch (_: Exception) {}
+            overlayRetry = 0
             return
         } catch (e: Exception) {
-            Log.e("CaptureService", "own overlay failed, try accessibility fallback", e)
+            Log.e("CaptureService", "own overlay also failed", e)
         }
-        val fallback = TapService.instance
-        if (fallback != null) {
-            fallback.showOverlay(status)
+        // 3) 两者都失败：可能是无障碍服务刚启用尚未连接，延迟重试
+        if (overlayRetry < 6) {
+            overlayRetry++
+            uiHandler.postDelayed({ showOverlay(status) }, 700)
             return
         }
+        // 最终失败：明确提示，不再静默
         try {
             Toast.makeText(
                 this,
-                "无法显示悬浮按钮：请在系统设置里开启「显示在其他应用上」或开启无障碍",
+                "无法显示悬浮按钮：请在系统设置中确认已开启本应用的无障碍服务（并允许其显示在顶部/悬浮窗）",
                 Toast.LENGTH_LONG
             ).show()
         } catch (_: Exception) {
@@ -273,6 +298,7 @@ class CaptureService : Service() {
     }
 
     fun hideOverlay() {
+        overlayRetry = 0
         if (overlayView != null) {
             try {
                 wm?.removeView(overlayView)
