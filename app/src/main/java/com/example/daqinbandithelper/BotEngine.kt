@@ -5,7 +5,8 @@ import android.graphics.Rect
 import java.util.regex.Pattern
 
 /**
- * S0=初始化(并入S1) → S1=检索盗匪 → S2=校验(等级) → S3=出征 → S4=行军等待 → S5=领奖 → S6=休眠/停止
+ * S0=初始化(并入S1) → S1 检索盗匪 → S2 讨伐 → S25 选队伍(全选→确定) → S3 出征
+ *   → S4 行军等待 → S5 领奖 → S6 休眠/停止
  * 由 CaptureService 每个画面帧驱动 processFrame()。
  */
 class BotEngine(private val ctx: android.content.Context) {
@@ -22,6 +23,13 @@ class BotEngine(private val ctx: android.content.Context) {
     private var lastH = 0
     private var stopped = false
 
+    /** 选队伍步骤里是否已点过【全选】 */
+    private var selectedAll = false
+
+    /** 连续未命中次数 / 阈值放宽档位（0=用设定阈值，最多放宽 2 档） */
+    private var missCount = 0
+    private var relax = 0
+
     private var statusCb: ((String) -> Unit)? = null
     fun setStatusCallback(cb: (String) -> Unit) { statusCb = cb }
 
@@ -32,6 +40,24 @@ class BotEngine(private val ctx: android.content.Context) {
         val base = prefs.baseDelayMs
         val jitter = (base * 0.3f * (random.nextFloat() * 2 - 1)).toLong()
         nextActionAt = System.currentTimeMillis() + base + jitter + extraMs
+    }
+
+    /** 当前生效阈值：连续找不到时逐档放宽，最多放宽 0.10 */
+    private fun thr(): Float = (prefs.matchThreshold - 0.05f * relax).coerceAtLeast(0.55f)
+
+    private fun onHit() {
+        missCount = 0
+        relax = 0
+    }
+
+    /** 记录一次未命中并返回当前（可能已放宽的）阈值 */
+    private fun onMiss(): Float {
+        missCount++
+        if (missCount >= 6 && relax < 2) {
+            relax++
+            missCount = 0
+        }
+        return thr()
     }
 
     private fun status(s: String) {
@@ -47,6 +73,7 @@ class BotEngine(private val ctx: android.content.Context) {
         when (state) {
             C.S1_FIND -> stepFind(bmp)
             C.S2_VALIDATE -> stepValidate(bmp)
+            C.S25_SELECT -> stepSelect(bmp)
             C.S3_MARCH -> stepMarch(bmp)
             C.S4_WAIT -> stepWait(bmp)
             C.S5_COLLECT -> stepCollect(bmp)
@@ -61,8 +88,9 @@ class BotEngine(private val ctx: android.content.Context) {
             status("缺少盗匪模板，无法检索")
             return
         }
-        val m = TemplateMatcher.match(bmp, tpl, prefs.matchThreshold)
+        val m = TemplateMatcher.match(bmp, tpl, thr())
         if (m.found) {
+            onHit()
             notFound = 0
             status("S1 发现盗匪 命中=${"%.2f".format(m.score)}")
             if (levelOk(bmp, m.x, m.y)) {
@@ -74,34 +102,79 @@ class BotEngine(private val ctx: android.content.Context) {
             }
         } else {
             notFound++
+            val t = onMiss()
             if (notFound > 12) {
-                status("S1 连续 ${notFound} 次未找到盗匪，进入休眠")
+                status("S1 连续 $notFound 次未找到盗匪(最高分=${"%.2f".format(m.score)}，阈值=${"%.2f".format(t)})，进入休眠")
                 state = C.S6_SLEEP
             } else {
-                randomDrag()
+                randomDrag("S1 未命中 best=${"%.2f".format(m.score)} thr=${"%.2f".format(t)} 拖动地图刷新 ($notFound)")
             }
         }
     }
 
-    // ---------------- S2 校验 ----------------
+    // ---------------- S2 讨伐 ----------------
     private fun stepValidate(bmp: Bitmap) {
         if (!ready()) return
         val tpl = prefs.loadTemplate(C.TPL_ATTACK)
         if (tpl == null) {
-            state = C.S3_MARCH
+            state = C.S25_SELECT
             enterTime = now
             return
         }
-        val m = TemplateMatcher.match(bmp, tpl, prefs.matchThreshold)
+        val m = TemplateMatcher.match(bmp, tpl, thr())
         if (m.found) {
+            onHit()
             status("S2 找到讨伐 命中=${"%.2f".format(m.score)}")
             tap(m.x, m.y, "讨伐")
-            state = C.S3_MARCH
+            selectedAll = false
+            state = C.S25_SELECT
             enterTime = now
-        } else if (now - enterTime > 4000) {
-            status("S2 未出现讨伐面板，返回地图")
+        } else if (now - enterTime > 6000) {
+            status("S2 未出现讨伐面板（最高分=${"%.2f".format(m.score)}），返回地图")
             closePanel(bmp)
             state = C.S1_FIND
+            notFound = 0
+        }
+    }
+
+    // ---------------- S25 选队伍：全选 → 确定 ----------------
+    private fun stepSelect(bmp: Bitmap) {
+        if (!ready()) return
+
+        // ① 先点【全选】
+        val tplAll = prefs.loadTemplate(C.TPL_SELECT_ALL)
+        if (!selectedAll && tplAll != null) {
+            val m = TemplateMatcher.match(bmp, tplAll, thr())
+            if (m.found) {
+                onHit()
+                status("S25 找到全选 命中=${"%.2f".format(m.score)}")
+                tap(m.x, m.y, "全选")
+                selectedAll = true
+                return
+            }
+        }
+
+        // ② 再点【确定】（选队伍面板里的确定）
+        val tplOk = prefs.loadTemplate(C.TPL_CONFIRM_TROOP)
+        if (tplOk != null) {
+            val m = TemplateMatcher.match(bmp, tplOk, thr())
+            if (m.found) {
+                onHit()
+                status("S25 找到确定(选队伍) 命中=${"%.2f".format(m.score)}")
+                tap(m.x, m.y, "确定队伍")
+                selectedAll = false
+                state = C.S3_MARCH
+                enterTime = now
+                return
+            }
+        }
+
+        // ③ 超时兜底：没采这两个模板或没匹配上，直接进入出征确认
+        if (now - enterTime > 6000) {
+            status("S25 未找到全选/确定(选队伍)，直接进入出征确认")
+            selectedAll = false
+            state = C.S3_MARCH
+            enterTime = now
         }
     }
 
@@ -114,8 +187,9 @@ class BotEngine(private val ctx: android.content.Context) {
             enterTime = now
             return
         }
-        val m = TemplateMatcher.match(bmp, tpl, prefs.matchThreshold)
+        val m = TemplateMatcher.match(bmp, tpl, thr())
         if (m.found) {
+            onHit()
             status("S3 确认出征 命中=${"%.2f".format(m.score)}")
             tap(m.x, m.y, "确认出征")
             state = C.S4_WAIT
@@ -129,10 +203,11 @@ class BotEngine(private val ctx: android.content.Context) {
                     return
                 }
             }
-            if (now - enterTime > 4000) {
-                status("S3 未出现确认出征，返回地图")
-                closePanel(bmp)
-                state = C.S1_FIND
+            if (now - enterTime > 5000) {
+                // 有些版本点【确定】即直接出征，没有单独的"确认出征"面板
+                status("S3 未出现确认出征（最高分=${"%.2f".format(m.score)}），视为已出征，进入等待")
+                state = C.S4_WAIT
+                enterTime = now
             }
         }
     }
@@ -141,8 +216,9 @@ class BotEngine(private val ctx: android.content.Context) {
     private fun stepWait(bmp: Bitmap) {
         val tpl = prefs.loadTemplate(C.TPL_CONFIRM)
         if (tpl != null) {
-            val m = TemplateMatcher.match(bmp, tpl, prefs.matchThreshold)
+            val m = TemplateMatcher.match(bmp, tpl, thr())
             if (m.found) {
+                onHit()
                 status("S4 出现领奖 命中=${"%.2f".format(m.score)}")
                 if (ready()) tap(m.x, m.y, "确定领奖")
                 cycle++
@@ -152,7 +228,7 @@ class BotEngine(private val ctx: android.content.Context) {
                 return
             }
         }
-        if (now - enterTime > 120000) {
+        if (now - enterTime > 180000) {
             status("S4 战斗超时，返回地图")
             TapService.instance?.back()
             cooldown(400)
@@ -172,7 +248,7 @@ class BotEngine(private val ctx: android.content.Context) {
         // 若仍有确定弹窗，补点一次
         val tpl = prefs.loadTemplate(C.TPL_CONFIRM)
         if (tpl != null) {
-            val m = TemplateMatcher.match(bmp, tpl, prefs.matchThreshold)
+            val m = TemplateMatcher.match(bmp, tpl, thr())
             if (m.found) tap(m.x, m.y, "确定领奖")
         }
         state = C.S1_FIND
@@ -199,7 +275,7 @@ class BotEngine(private val ctx: android.content.Context) {
         status("点击 $label @ ($x,$y)")
     }
 
-    private fun randomDrag() {
+    private fun randomDrag(msg: String) {
         val tap = TapService.instance ?: return
         val cx = lastW / 2
         val cy = lastH / 2
@@ -207,13 +283,13 @@ class BotEngine(private val ctx: android.content.Context) {
         val dy = ((random.nextFloat() * 2 - 1) * lastH * 0.25).toInt()
         tap.swipe(cx, cy, cx + dx, cy + dy, 350)
         cooldown(400)
-        status("S1 拖动地图刷新 (${notFound})")
+        status(msg)
     }
 
     private fun closePanel(bmp: Bitmap) {
         val tpl = prefs.loadTemplate(C.TPL_CLOSE)
         if (tpl != null) {
-            val m = TemplateMatcher.match(bmp, tpl, prefs.matchThreshold)
+            val m = TemplateMatcher.match(bmp, tpl, thr())
             if (m.found) {
                 tap(m.x, m.y, "关闭")
                 return

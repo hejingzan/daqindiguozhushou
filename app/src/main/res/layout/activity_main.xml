@@ -38,7 +38,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="二、采集模板（游戏里把对应按钮露出来，再点下面的按钮，悬浮「截图」会浮出来，进游戏点它即可裁图）"
+            android:text="二、采集模板（游戏里把对应按钮露出来，再点下面的按钮，悬浮「截图」会浮出来，进游戏点它即可裁图）\n游戏流程：点盗匪 → 点【讨伐】→ 点【全选】选队伍 → 点【确定】→ 确认出征"
             android:textSize="12sp"
             android:layout_marginTop="12dp" />
 
@@ -50,10 +50,12 @@
 
             <Button android:id="@+id/btn_capture_bandit" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="① 盗匪图标" android:textSize="13sp" />
             <Button android:id="@+id/btn_capture_attack" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="② 讨伐" android:textSize="13sp" />
-            <Button android:id="@+id/btn_capture_march" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="③ 确认出征" android:textSize="13sp" />
-            <Button android:id="@+id/btn_capture_confirm" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="④ 确定领奖" android:textSize="13sp" />
-            <Button android:id="@+id/btn_capture_close" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="⑤ 关闭叉号" android:textSize="13sp" />
-            <Button android:id="@+id/btn_capture_home" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="⑥ 主城/地图" android:textSize="13sp" />
+            <Button android:id="@+id/btn_capture_select_all" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="③ 全选(选队伍)" android:textSize="13sp" />
+            <Button android:id="@+id/btn_capture_confirm_troop" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="④ 确定(选队伍)" android:textSize="13sp" />
+            <Button android:id="@+id/btn_capture_march" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="⑤ 确认出征" android:textSize="13sp" />
+            <Button android:id="@+id/btn_capture_confirm" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="⑥ 确定领奖" android:textSize="13sp" />
+            <Button android:id="@+id/btn_capture_close" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="⑦ 关闭叉号" android:textSize="13sp" />
+            <Button android:id="@+id/btn_capture_home" android:layout_width="0dp" android:layout_columnWeight="1" android:layout_height="44dp" android:text="⑧ 主城/地图" android:textSize="13sp" />
         </GridLayout>
 
         <TextView

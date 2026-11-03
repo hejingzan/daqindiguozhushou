@@ -83,6 +83,8 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<Button>(R.id.btn_capture_bandit).setOnClickListener { startCaptureFlow(C.TPL_BANDIT) }
         findViewById<Button>(R.id.btn_capture_attack).setOnClickListener { startCaptureFlow(C.TPL_ATTACK) }
+        findViewById<Button>(R.id.btn_capture_select_all).setOnClickListener { startCaptureFlow(C.TPL_SELECT_ALL) }
+        findViewById<Button>(R.id.btn_capture_confirm_troop).setOnClickListener { startCaptureFlow(C.TPL_CONFIRM_TROOP) }
         findViewById<Button>(R.id.btn_capture_march).setOnClickListener { startCaptureFlow(C.TPL_MARCH) }
         findViewById<Button>(R.id.btn_capture_confirm).setOnClickListener { startCaptureFlow(C.TPL_CONFIRM) }
         findViewById<Button>(R.id.btn_capture_close).setOnClickListener { startCaptureFlow(C.TPL_CLOSE) }
@@ -165,7 +167,7 @@ class MainActivity : AppCompatActivity() {
             append(if (acc) "✅" else "❌")
             append("  无障碍服务实例：")
             append(if (tapReady) "✅" else "❌未连接")
-            append("\n已采模板：$tpl/6   ")
+            append("\n已采模板：$tpl/${C.TPL_ORDER.size}   ")
             append(if (BotController.running) "运行中" else "待机")
         }
         btnStart.text = if (BotController.running) "⏸ 停止挂机" else "▶ 开始挂机"
