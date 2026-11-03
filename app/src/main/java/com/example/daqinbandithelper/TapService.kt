@@ -72,7 +72,10 @@ class TapService : AccessibilityService() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            0,
+            // 必须加 NOT_TOUCH_MODAL，否则该窗口是"触摸模态"的，会吞掉整个屏幕的触摸，
+            // 导致游戏完全点不动；NOT_FOCUSABLE 避免抢走输入焦点。
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         )
         params.gravity = Gravity.TOP or Gravity.START
