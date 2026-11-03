@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.graphics.PixelFormat
 import android.graphics.Point
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -20,8 +21,15 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.provider.Settings
 import android.util.Log
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.View
 import android.view.WindowManager
+import android.widget.Button
+import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 
 /**
@@ -29,6 +37,10 @@ import androidx.core.app.NotificationCompat
  *  - ACTION_START  → 机器人模式（MediaProjection 截图 → BotEngine 状态机 → TapService 点击）
  *  - ACTION_CAPTURE → 采集模式（MediaProjection 截图 → CropActivity 裁图存模板）
  *  - ACTION_STOP   → 停止
+ *
+ * 悬浮控制窗（停止 / 📷截图）由本服务自己用 TYPE_APPLICATION_OVERLAY 承载，
+ * 不再依赖无障碍服务的连接时机，避免“授权后没有浮出按钮”的问题；
+ * 无障碍服务仅用于真正下发触摸手势。
  */
 class CaptureService : Service() {
 
@@ -45,6 +57,11 @@ class CaptureService : Service() {
 
     private var w = 0
     private var h = 0
+
+    // 自带悬浮控制窗
+    private var overlayView: View? = null
+    private var tvStatus: TextView? = null
+    private var wm: WindowManager? = null
 
     companion object {
         private const val MODE_IDLE = 0
@@ -86,8 +103,8 @@ class CaptureService : Service() {
         BotController.captureService = this
         BotController.running = true
         BotController.captureMode = false
-        engine?.setStatusCallback { s -> TapService.instance?.setStatus(s) }
-        TapService.instance?.showOverlay("挂机中…")
+        engine?.setStatusCallback { s -> setStatus(s) }
+        showOverlay("挂机中…（点击停止可结束）")
         scheduleLoop()
     }
 
@@ -105,7 +122,7 @@ class CaptureService : Service() {
         mode = MODE_CAPTURE
         BotController.captureService = this
         BotController.captureMode = true
-        TapService.instance?.showOverlay("采集模式：去游戏点「📷截图」")
+        showOverlay("采集模式：去游戏点「📷截图」")
     }
 
     private fun initProjection(rc: Int, data: Intent) {
@@ -199,14 +216,89 @@ class CaptureService : Service() {
         }
     }
 
+    // ===================== 自带悬浮控制窗 =====================
+
+    /** 显示悬浮控制窗：优先用本服务自己的 TYPE_APPLICATION_OVERLAY，
+     *  失败再回退到无障碍服务的浮层；都不行则提示用户授权。 */
+    fun showOverlay(status: String) {
+        try {
+            ensureOverlay()
+            setStatus(status)
+            return
+        } catch (e: Exception) {
+            Log.e("CaptureService", "own overlay failed, try accessibility fallback", e)
+        }
+        val fallback = TapService.instance
+        if (fallback != null) {
+            fallback.showOverlay(status)
+            return
+        }
+        try {
+            Toast.makeText(
+                this,
+                "无法显示悬浮按钮：请在系统设置里开启「显示在其他应用上」或开启无障碍",
+                Toast.LENGTH_LONG
+            ).show()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun ensureOverlay() {
+        if (overlayView != null) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            throw SecurityException("SYSTEM_ALERT_WINDOW not granted")
+        }
+        wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val inflater = getSystemService(Context.LAYOUT_INFLATER_SERVICE) as LayoutInflater
+        overlayView = inflater.inflate(R.layout.overlay_status, null)
+        tvStatus = overlayView!!.findViewById(R.id.tv_status)
+        val btnStop = overlayView!!.findViewById<Button>(R.id.btn_overlay_stop)
+        val btnShoot = overlayView!!.findViewById<Button>(R.id.btn_overlay_shoot)
+        btnStop.setOnClickListener { BotController.stop() }
+        btnShoot.visibility = if (mode == MODE_CAPTURE) View.VISIBLE else View.GONE
+        btnShoot.setOnClickListener { shoot() }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        )
+        params.gravity = Gravity.TOP or Gravity.START
+        wm!!.addView(overlayView, params)
+    }
+
+    fun setStatus(s: String) {
+        tvStatus?.text = s
+    }
+
+    fun hideOverlay() {
+        if (overlayView != null) {
+            try {
+                wm?.removeView(overlayView)
+            } catch (_: Exception) {
+            }
+            overlayView = null
+            tvStatus = null
+        }
+        // 一并清理可能残留的无障碍浮层
+        try {
+            TapService.instance?.hideOverlay()
+        } catch (_: Exception) {
+        }
+    }
+
     fun requestStop() {
-        if (!running && mode == MODE_IDLE) return
+        if (!running && mode == MODE_IDLE) {
+            hideOverlay()
+            return
+        }
         running = false
         mode = MODE_IDLE
         BotController.running = false
         BotController.captureMode = false
         BotController.captureService = null
-        TapService.instance?.hideOverlay()
+        hideOverlay()
         try {
             handler.removeCallbacksAndMessages(null)
         } catch (_: Exception) {
@@ -236,26 +328,30 @@ class CaptureService : Service() {
     }
 
     private fun startForegroundSafe() {
-        createChannel()
-        val pi = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
-        )
-        val notif: Notification = NotificationCompat.Builder(this, C.CHANNEL_ID)
-            .setContentTitle("大秦打盗匪助手")
-            .setContentText("运行中")
-            .setSmallIcon(R.drawable.ic_launcher)
-            .setContentIntent(pi)
-            .setOngoing(true)
-            .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                C.NOTIF_ID, notif,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        try {
+            createChannel()
+            val pi = PendingIntent.getActivity(
+                this, 0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE
             )
-        } else {
-            startForeground(C.NOTIF_ID, notif)
+            val notif: Notification = NotificationCompat.Builder(this, C.CHANNEL_ID)
+                .setContentTitle("大秦打盗匪助手")
+                .setContentText("运行中")
+                .setSmallIcon(R.drawable.ic_launcher)
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .build()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    C.NOTIF_ID, notif,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
+            } else {
+                startForeground(C.NOTIF_ID, notif)
+            }
+        } catch (e: Exception) {
+            Log.e("CaptureService", "startForeground failed (continuing)", e)
         }
     }
 
