@@ -38,6 +38,16 @@
             android:backgroundTint="#2E7D32" />
     </LinearLayout>
 
+    <TextView
+        android:id="@+id/tv_crop_info"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="拖动框选：建议只框按钮/图标本身，60~150 像素见方；不要框入会变化的文字与倒计时"
+        android:textColor="#8FE388"
+        android:textSize="12sp"
+        android:background="#102027"
+        android:padding="6dp" />
+
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent">

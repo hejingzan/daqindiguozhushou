@@ -33,6 +33,9 @@ class CropView @JvmOverloads constructor(
 
     var onRect: ((Rect) -> Unit)? = null
 
+    /** 拖动过程中实时回调（用于显示选区尺寸与细节度提示） */
+    var onDrag: ((Rect) -> Unit)? = null
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
@@ -41,14 +44,17 @@ class CropView @JvmOverloads constructor(
                 curX = event.x
                 curY = event.y
                 dragging = true
+                onDrag?.invoke(currentRect())
             }
             MotionEvent.ACTION_MOVE -> {
                 curX = event.x
                 curY = event.y
                 invalidate()
+                onDrag?.invoke(currentRect())
             }
             MotionEvent.ACTION_UP -> {
                 dragging = false
+                onDrag?.invoke(currentRect())
                 emitRect()
             }
         }
