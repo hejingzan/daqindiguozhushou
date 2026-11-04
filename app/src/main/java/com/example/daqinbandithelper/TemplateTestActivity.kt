@@ -16,6 +16,8 @@ import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.WindowManager
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
@@ -46,7 +48,7 @@ class TemplateTestActivity : AppCompatActivity() {
         if (res.resultCode == Activity.RESULT_OK && res.data != null) {
             resultCode = res.resultCode
             resultData = res.data
-            runTest()
+            ensureProjectionThenRun()
         } else {
             Toast.makeText(this, "未授权录屏，无法测试", Toast.LENGTH_LONG).show()
         }
@@ -80,11 +82,44 @@ class TemplateTestActivity : AppCompatActivity() {
                     Toast.makeText(this, "申请录屏失败：$e", Toast.LENGTH_LONG).show()
                 }
             } else {
-                runTest()
+                ensureProjectionThenRun()
             }
         }
 
         findViewById<Button>(R.id.btn_test_back).setOnClickListener { finish() }
+    }
+
+    /** 确保已有 mediaProjection 类型前台服务在运行并建好投影，再开始测试（Android 14+ 硬性要求）。 */
+    private fun ensureProjectionThenRun() {
+        if (MediaProjService.instance?.projection != null) {
+            runTest()
+            return
+        }
+        try {
+            val intent = Intent(this, MediaProjService::class.java).apply {
+                putExtra(C.EXTRA_RESULT_CODE, resultCode)
+                putExtra(C.EXTRA_DATA, resultData)
+            }
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            textResult.text = "❌ 启动录屏服务失败：$e"
+            return
+        }
+        var tries = 0
+        val h = Handler(Looper.getMainLooper())
+        val check = object : Runnable {
+            override fun run() {
+                if (MediaProjService.instance?.projection != null) {
+                    runTest()
+                } else if (tries++ < 15) {
+                    h.postDelayed(this, 100)
+                } else {
+                    textResult.text = "❌ 录屏服务初始化超时，请重试"
+                    btnTest.isEnabled = true
+                }
+            }
+        }
+        h.postDelayed(check, 120)
     }
 
     private fun runTest() {
@@ -136,8 +171,9 @@ class TemplateTestActivity : AppCompatActivity() {
     }
 
     private fun captureFrame(): Bitmap? {
-        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = mpm.getMediaProjection(resultCode, resultData!!)
+        // 复用临时录屏前台服务持有的投影（满足 Android 14+ 要求）
+        mediaProjection = MediaProjService.instance?.projection
+        if (mediaProjection == null) return null
         val dm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val size = Point()
         dm.defaultDisplay.getRealSize(size)
@@ -214,10 +250,11 @@ class TemplateTestActivity : AppCompatActivity() {
     private fun releaseProjection() {
         try { virtualDisplay?.release() } catch (_: Exception) {}
         try { imageReader?.close() } catch (_: Exception) {}
-        try { mediaProjection?.stop() } catch (_: Exception) {}
         virtualDisplay = null
         imageReader = null
         mediaProjection = null
+        // 投影归前台服务所有，这里仅停止该服务
+        try { stopService(Intent(this, MediaProjService::class.java)) } catch (_: Exception) {}
     }
 
     override fun onDestroy() {

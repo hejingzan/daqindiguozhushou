@@ -23,6 +23,7 @@ class TapService : AccessibilityService() {
 
     companion object {
         var instance: TapService? = null
+        private const val TAP_MS = 60L
     }
 
     private var overlayView: View? = null
@@ -108,12 +109,13 @@ class TapService : AccessibilityService() {
         }
     }
 
+    /** 单次点击。时长过短（如 1ms）部分游戏吃不到，这里用 60ms 保证被识别为一次有效点击。 */
     fun tap(x: Int, y: Int): Boolean {
         val p = Path()
         p.moveTo(x.toFloat(), y.toFloat())
         p.lineTo(x.toFloat() + 1f, y.toFloat() + 1f)
         val g = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(p, 0, 1))
+            .addStroke(GestureDescription.StrokeDescription(p, 0, TAP_MS))
             .build()
         return dispatchGesture(g, null, null)
     }

@@ -102,13 +102,16 @@ object TemplateMatcher {
         return iSum to iSq
     }
 
-    private fun meanStd(a: FloatArray): Pair<Float, Float> {
+    /** 返回 (均值, 离差平方和)。分母用 sqrt(fVar * tVar) 才是真正的归一化互相关 NCC（范围 -1~1）。
+     *  旧实现 tStd=sqrt(var/n) 漏了 sqrt(n) 因子，导致分数被放大 sqrt(模板像素数) 倍（几十倍），
+     *  阈值 0.8 形同虚设，满屏误检。 */
+    private fun meanVar(a: FloatArray): Pair<Float, Float> {
         var m = 0f
         for (v in a) m += v
         m /= a.size
         var v = 0f
         for (x in a) v += (x - m) * (x - m)
-        return m to sqrt(v / a.size)
+        return m to v
     }
 
     /** 单模板便捷入口（委托给多模板） */
@@ -181,9 +184,9 @@ object TemplateMatcher {
                 val tGray = gray(tBmp)
                 val tEdge = edges(tGray, tw, th)
                 tBmp.recycle()
-                val (tgM, tgS) = meanStd(tGray)
-                val (teM, teS) = meanStd(tEdge)
-                if (tgS < 1e-3f && teS < 1e-3f) continue
+                val (tgM, tgV) = meanVar(tGray)
+                val (teM, teV) = meanVar(tEdge)
+                if (tgV < 1e-2f && teV < 1e-2f) continue
                 val area = (tw * th).toFloat()
 
                 // 大模板用更大步长，缩小扫描量
@@ -196,8 +199,8 @@ object TemplateMatcher {
                 while (y <= fh - th) {
                     var x = 0
                     while (x <= fw - tw) {
-                        val n = ncc(fGray, igS, igQ, w1, tGray, tgM, tgS, x, y, tw, th, fw, area)
-                        val e = if (teS >= 1e-3f) ncc(fEdge, ieS, ieQ, w1, tEdge, teM, teS, x, y, tw, th, fw, area) else n
+                        val n = ncc(fGray, igS, igQ, w1, tGray, tgM, tgV, x, y, tw, th, fw, area)
+                        val e = if (teV >= 1e-2f) ncc(fEdge, ieS, ieQ, w1, tEdge, teM, teV, x, y, tw, th, fw, area) else n
                         val v = if (n > e) n else e
                         if (v > lb) {
                             lb = v
@@ -216,8 +219,8 @@ object TemplateMatcher {
                 val rx1 = min(fw - tw, lx + step)
                 for (yy in ry0..ry1) {
                     for (xx in rx0..rx1) {
-                        val n = ncc(fGray, igS, igQ, w1, tGray, tgM, tgS, xx, yy, tw, th, fw, area)
-                        val e = if (teS >= 1e-3f) ncc(fEdge, ieS, ieQ, w1, tEdge, teM, teS, xx, yy, tw, th, fw, area) else n
+                        val n = ncc(fGray, igS, igQ, w1, tGray, tgM, tgV, xx, yy, tw, th, fw, area)
+                        val e = if (teV >= 1e-2f) ncc(fEdge, ieS, ieQ, w1, tEdge, teM, teV, xx, yy, tw, th, fw, area) else n
                         val v = if (n > e) n else e
                         if (v > lb) {
                             lb = v
@@ -254,7 +257,7 @@ object TemplateMatcher {
     /** 单个位置的 NCC（均值/方差走积分图，O(1)）；交叉项 O(tw·th) 无法省，靠小模板+步长控制耗时 */
     private fun ncc(
         f: FloatArray, iSum: FloatArray, iSq: FloatArray, w1: Int,
-        t: FloatArray, tMean: Float, tStd: Float,
+        t: FloatArray, tMean: Float, tVar: Float,
         x: Int, y: Int, tw: Int, th: Int, fw: Int, area: Float
     ): Float {
         val sum = iSum[(y + th) * w1 + (x + tw)] - iSum[y * w1 + (x + tw)] -
@@ -264,8 +267,8 @@ object TemplateMatcher {
         val fMean = sum / area
         val fVar = sq - area * fMean * fMean
         if (fVar <= 1e-6f) return -2f
-        val fStd = sqrt(fVar)
-        val den = fStd * tStd
+        // 真正 NCC 分母 = sqrt(Σ(f-fm)² · Σ(t-tm)²) = sqrt(fVar · tVar)
+        val den = sqrt(fVar * tVar)
         if (den <= 1e-4f) return -2f
         var num = 0f
         for (j in 0 until th) {
