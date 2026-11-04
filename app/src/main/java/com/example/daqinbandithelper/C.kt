@@ -17,6 +17,21 @@ object C {
         TPL_BANDIT, TPL_ATTACK, TPL_SELECT_ALL, TPL_CONFIRM_TROOP,
         TPL_MARCH, TPL_CONFIRM, TPL_CLOSE, TPL_HOME
     )
+
+    /**
+     * 每个模板的搜索区域（归一化 0..1，相对整帧；null=全屏搜索）。
+     * 思路：讨伐/选队伍/出征/领奖等按钮只会出现在屏幕固定区域，限制 ROI 可大幅减少地图噪声、
+     * 避免与“前往/出征”等金色文字混淆，并显著提升匹配速度与分数。
+     * 注意：TPL_ATTACK（讨伐）为 null，由 BotEngine 以“盗匪点击位置”为中心动态生成 ROI。
+     */
+    val TPL_ROI: Map<String, FloatArray?> = mapOf(
+        TPL_SELECT_ALL to floatArrayOf(0.06f, 0.16f, 0.94f, 0.96f),
+        TPL_CONFIRM_TROOP to floatArrayOf(0.06f, 0.16f, 0.94f, 0.96f),
+        TPL_MARCH to floatArrayOf(0.12f, 0.45f, 0.96f, 0.98f),
+        TPL_CONFIRM to floatArrayOf(0.12f, 0.35f, 0.96f, 0.98f),
+        TPL_CLOSE to floatArrayOf(0.0f, 0.0f, 0.6f, 0.5f)
+        // TPL_ATTACK / TPL_BANDIT / TPL_HOME 不在表中 → 全屏搜索
+    )
     val TPL_LABELS = mapOf(
         TPL_BANDIT to "盗匪图标",
         TPL_ATTACK to "讨伐",

@@ -88,7 +88,7 @@ class CropActivity : AppCompatActivity() {
     private fun updateInfo(viewRect: Rect) {
         val tv = findViewById<TextView>(R.id.tv_crop_info) ?: return
         if (dispScale <= 0f) {
-            tv.text = "拖动框选：建议只框按钮/图标本身，60~150 像素见方"
+            tv.text = "拖动框选：只框按钮/图标本身，60~200 像素见方。同一按钮建议截 2~3 张不同状态（常态/高亮/半透明）"
             return
         }
         val sr = toSource(viewRect)
@@ -127,6 +127,7 @@ class CropActivity : AppCompatActivity() {
         val cropped = Bitmap.createBitmap(src, bx, by, bw, bh)
         val name = tpl ?: C.TPL_BANDIT
         prefs.saveTemplate(name, cropped)
+        val n = prefs.templateCount(name)
         val d = detailScore(sr)
         // 自测：用刚截的整图去匹配这张模板，分数应接近 1.0；偏低说明截歪/截错
         val self = try {
@@ -134,13 +135,14 @@ class CropActivity : AppCompatActivity() {
         } catch (_: Exception) { null }
         cropped.recycle()
         val selfScore = self?.score ?: -1f
-        Diag.log("模板", "保存 ${C.TPL_LABELS[name] ?: name} ${bw}×${bh}px 细节=${"%.0f".format(d)} 自测分=${"%.2f".format(selfScore)}")
+        Diag.log("模板", "保存 ${C.TPL_LABELS[name] ?: name} #${n - 1} ${bw}×${bh}px 细节=${"%.0f".format(d)} 自测分=${"%.2f".format(selfScore)}")
         val warn = when {
             selfScore in 0.0f..0.6f -> "（自测分仅 ${"%.2f".format(selfScore)}，可能没截中目标，建议重截）"
             d < 8f -> "（细节偏低，可能匹配不到）"
             else -> ""
         }
-        Toast.makeText(this, "已保存「${C.TPL_LABELS[name] ?: name}」${bw}×${bh}px$warn", Toast.LENGTH_SHORT).show()
+        val tip = if (n < 3) "\n可换一种状态再点📷截图追加（建议 2~3 张）" else "\n已采集 $n 张，足够"
+        Toast.makeText(this, "已保存「${C.TPL_LABELS[name] ?: name}」第$n张 ${bw}×${bh}px$warn$tip", Toast.LENGTH_SHORT).show()
         finish()
     }
 }

@@ -101,17 +101,26 @@ class TemplateTestActivity : AppCompatActivity() {
                     }
                     return@Thread
                 }
-                val tpl = prefs.loadTemplate(name)!!
-                val r = TemplateMatcher.match(frame, tpl, 0f)
+                val tpls = prefs.loadTemplates(name)
+                if (tpls.isEmpty()) {
+                    runOnUiThread {
+                        textResult.text = "❌ 未找到「${C.TPL_LABELS[name]}」模板"
+                        btnTest.isEnabled = true
+                    }
+                    frame.recycle()
+                    return@Thread
+                }
+                val r = TemplateMatcher.matchMulti(frame, tpls, 0f, null)
                 val annotated = annotate(frame, r, C.TPL_LABELS[name] ?: name)
                 runOnUiThread {
                     imageView.setImageBitmap(annotated)
+                    val variantTip = if (tpls.size > 1) "（遍历 ${tpls.size} 张变体，命中#${r.variant}）" else ""
                     val verdict = when {
                         r.score >= 0.8f -> "✅ 能稳定识别，红框已框中目标"
                         r.score >= 0.65f -> "⚠ 偏弱（最高分 ${"%.2f".format(r.score)}），可能偶尔漏判。建议重截该模板(只框图标本身、少带背景)，或把『匹配阈值』调低一点"
-                        else -> "❌ 几乎识别不到（最高分 ${"%.2f".format(r.score)}）。请确认当前画面确实有该目标，并重截「${C.TPL_LABELS[name]}」：只框图标/按钮本身，少带背景与透明边"
+                        else -> "❌ 几乎识别不到（最高分 ${"%.2f".format(r.score)}）。请确认当前画面确实有该目标，并重截「${C.TPL_LABELS[name]}」：只框图标/按钮本身，少带背景与透明边；金色按钮建议多截 2~3 张不同状态"
                     }
-                    textResult.text = "模板：${C.TPL_LABELS[name]}\n最高分：${"%.2f".format(r.score)}\n$verdict"
+                    textResult.text = "模板：${C.TPL_LABELS[name]} ×${tpls.size}$variantTip\n最高分：${"%.2f".format(r.score)}\n$verdict"
                     btnTest.isEnabled = true
                 }
                 frame.recycle()

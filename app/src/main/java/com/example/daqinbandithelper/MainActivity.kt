@@ -223,6 +223,7 @@ class MainActivity : AppCompatActivity() {
         BotController.captureService = null
         pendingAction = "capture"
         textHint.text = "采集「${C.TPL_LABELS[tpl]}」：授权后左上角应浮出「📷截图」。\n" +
+            "同一按钮建议截 2~3 张不同状态（常态/高亮/半透明），每次截完会提示，重复点📷即可追加。\n" +
             "若没浮出，请改用下方「📥 从相册导入」（游戏里按系统截图键截图，再选该图片即可）。"
         Diag.log("界面", "开始采集模板 $tpl")
         handler.postDelayed({ launchCapture() }, 250)

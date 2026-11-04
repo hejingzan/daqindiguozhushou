@@ -1,6 +1,7 @@
 package com.example.daqinbandithelper
 
 import android.graphics.Bitmap
+import android.graphics.Rect
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -9,19 +10,14 @@ import kotlin.math.sqrt
  * 纯 Kotlin 模板匹配（归一化互相关 NCC，与 OpenCV matchTemplate TM_CCOEFF_NORMED 同原理）。
  * 零原生依赖，避免 OpenCV 原生库加载失败导致崩溃。
  *
- * v4.0.9 重写要点（修复"缩放不一致 / 永远 0.7 分"）：
- * 旧版在【工作图】下用"绝对像素边长"(16~80px)穷举尺度，但用户截的模板是设备原分辨率
- * （例如 90px），缩到工作图后实际只有 ~20px，落在 16 与 24 两个档位之间，永远到不了真实大小，
- * 于是 NCC 卡在 0.3~0.7。
- *
- * 现改为【尺度相对】搜索：
- *  1) 帧图只往下缩到 MAX_FRAME 以内；
- *  2) 以模板"自身尺寸在工作图中的自然大小(natural = tplMax * fs)"为中心，乘以 0.3~3.0 倍穷举尺度，
- *     这样无论当初怎么截、游戏地图放大/缩小到什么程度，总能有一档贴近真实大小；
- *  3) 同时跑【灰度 NCC】和【边缘 NCC】，取两者较高者——边缘对背景色/抗锯齿不敏感，
- *     在图标/按钮大小随缩放变化、或模板带了一点背景时都更稳；
- *  4) 粗扫 + 最优点 ±step 逐像素精修，保证点得准；
- *  5) 命中（达到阈值）即提前退出，正常很快；只有真找不到时才扫完所有尺度。
+ * v4.0.10 重写要点（对应「多模板兜底 + 局部区域 ROI」优化思路）：
+ *  1) 多模板：同一按钮可存 N 张不同状态变体（如讨伐的常态/高亮/半透明），matchMulti 遍历所有
+ *     变体并取最高分——金色按钮在不同光效/弹窗层下差异大，单张永远低分，多张能覆盖绝大多数场景。
+ *  2) ROI 局部搜索：传入 Rect 后只在区域内匹配，过滤地图/其他金色文字噪声，既提分又提速；
+ *     对「讨伐」等只在屏幕固定区出现的按钮尤其有效，避免与「前往/出征」混淆。
+ *  3) 尺度相对：以模板自身尺寸在工作图中的自然大小为锚，乘 0.3~3.0 穷举，覆盖地图缩放导致的大小变化。
+ *  4) 灰度 NCC + 边缘(Sobel) NCC 双路取高：边缘对背景色/抗锯齿/渐变金字不敏感，等价于"特征/形状匹配"。
+ *  5) 粗扫 + 最优点 ±step 精修；命中（达阈值）即提前退出。
  */
 object TemplateMatcher {
 
@@ -31,7 +27,8 @@ object TemplateMatcher {
         val y: Int,        // 命中框中心 Y（原图像素）
         val score: Float,  // 最高 NCC 相关系数（-1~1）
         val w: Int,        // 命中框宽（原图像素）
-        val h: Int         // 命中框高（原图像素）
+        val h: Int,        // 命中框高（原图像素）
+        val variant: Int = 0  // 命中的是哪一个模板变体（多模板时用于诊断）
     )
 
     /** 帧图长边上限（越大越准越慢） */
@@ -114,20 +111,40 @@ object TemplateMatcher {
         return m to sqrt(v / a.size)
     }
 
-    /**
-     * 在 frame 中匹配 template（尺度相对、灰度+边缘双路 NCC）。
-     * @param threshold NCC 阈值（0.5~0.98，越大越严格）。传 0 表示"只取最高分、不判命中"，用于自测。
-     */
-    fun match(frame: Bitmap, template: Bitmap, threshold: Float): Result {
-        val frameMax = max(frame.width, frame.height)
-        val tplW = template.width
-        val tplH = template.height
-        val tplMax = max(tplW, tplH)
-        if (frameMax <= 0 || tplMax <= 0) return Result(false, 0, 0, -2f, 0, 0)
+    /** 单模板便捷入口（委托给多模板） */
+    fun match(frame: Bitmap, template: Bitmap, threshold: Float): Result =
+        matchMulti(frame, listOf(template), threshold, null)
 
-        // ① 帧图只往下缩；模板保持原图（在各尺度下分别缩放去匹配）
-        val fs = min(1f, MAX_FRAME.toFloat() / frameMax)
-        val fBmp = scale(frame, fs)
+    /**
+     * 在 frame 中匹配一组模板变体（尺度相对、灰度+边缘双路 NCC、可选 ROI）。
+     * @param threshold NCC 阈值（0.5~0.98）。传 0 表示"只取最高分、不判命中"，用于自测/测试。
+     * @param roi       可选搜索区域（原图像素）。非空则在区域内匹配并自动还原到原图坐标。
+     */
+    fun matchMulti(
+        frame: Bitmap,
+        templates: List<Bitmap>,
+        threshold: Float,
+        roi: Rect? = null
+    ): Result {
+        val frameMax = max(frame.width, frame.height)
+        if (frameMax <= 0 || templates.isEmpty()) return Result(false, 0, 0, -2f, 0, 0)
+
+        // ROI 裁剪：只在该区域搜索，过滤无关噪声、提速、降误匹配
+        val (f0, ox, oy) = if (roi != null && roi.width() > 0 && roi.height() > 0) {
+            val left = roi.left.coerceIn(0, frame.width - 1)
+            val top = roi.top.coerceIn(0, frame.height - 1)
+            val right = roi.right.coerceAtMost(frame.width)
+            val bottom = roi.bottom.coerceAtMost(frame.height)
+            if (right - left >= 8 && bottom - top >= 8)
+                Triple(Bitmap.createBitmap(frame, left, top, right - left, bottom - top), left, top)
+            else Triple(frame, 0, 0)
+        } else Triple(frame, 0, 0)
+
+        val fMax = max(f0.width, f0.height)
+        val fs = min(1f, MAX_FRAME.toFloat() / fMax)
+        val fBmp = scale(f0, fs)
+        // 仅回收 ROI 裁出的副本；fs≈1 时 scale 会返回同一对象(f0===fBmp)，不可回收
+        if (f0 !== frame && f0 !== fBmp) f0.recycle()
         val fw = fBmp.width
         val fh = fBmp.height
         if (fw < 8 || fh < 8) return Result(false, 0, 0, -2f, 0, 0)
@@ -138,92 +155,100 @@ object TemplateMatcher {
         val (ieS, ieQ) = integral(fEdge, fw, fh)
         val w1 = fw + 1
 
-        // 模板在工作图中的"自然大小"——尺度搜索以它为中心（×0.3 ~ ×3.0）
-        val natural = tplMax * fs
-
         var best = -2f
         var bx = 0
         var by = 0
         var bestTW = 0
         var bestTH = 0
+        var bestVariant = 0
 
-        for (s in SCALES) {
-            val target = natural * s
-            if (target < 6f || target > min(fw, fh) * 0.95f) continue
-            val sc = target / tplMax
-            val tw = max(6, (tplW * sc).toInt())
-            val th = max(6, (tplH * sc).toInt())
-            if (tw > fw || th > fh) continue
+        outer@ for (s in SCALES) {
+            for ((ti, template) in templates.withIndex()) {
+                val tplW = template.width
+                val tplH = template.height
+                val tplMax = max(tplW, tplH)
+                if (tplMax <= 0) continue
+                // 以该模板自身自然大小为锚做尺度搜索
+                val natural = tplMax * fs
+                val target = natural * s
+                if (target < 6f || target > min(fw, fh) * 0.95f) continue
+                val sc = target / tplMax
+                val tw = max(6, (tplW * sc).toInt())
+                val th = max(6, (tplH * sc).toInt())
+                if (tw > fw || th > fh) continue
 
-            val tBmp = scale(template, sc)
-            val tGray = gray(tBmp)
-            val tEdge = edges(tGray, tw, th)
-            tBmp.recycle()
-            val (tgM, tgS) = meanStd(tGray)
-            val (teM, teS) = meanStd(tEdge)
-            if (tgS < 1e-3f && teS < 1e-3f) continue
-            val area = (tw * th).toFloat()
+                val tBmp = scale(template, sc)
+                val tGray = gray(tBmp)
+                val tEdge = edges(tGray, tw, th)
+                tBmp.recycle()
+                val (tgM, tgS) = meanStd(tGray)
+                val (teM, teS) = meanStd(tEdge)
+                if (tgS < 1e-3f && teS < 1e-3f) continue
+                val area = (tw * th).toFloat()
 
-            // 大模板用更大步长，缩小扫描量
-            val step = max(2, tw / 4)
+                // 大模板用更大步长，缩小扫描量
+                val step = max(2, tw / 4)
 
-            var lb = -2f
-            var lx = 0
-            var ly = 0
-            var y = 0
-            while (y <= fh - th) {
-                var x = 0
-                while (x <= fw - tw) {
-                    val n = ncc(fGray, igS, igQ, w1, tGray, tgM, tgS, x, y, tw, th, fw, area)
-                    val e = if (teS >= 1e-3f) ncc(fEdge, ieS, ieQ, w1, tEdge, teM, teS, x, y, tw, th, fw, area) else n
-                    val v = if (n > e) n else e
-                    if (v > lb) {
-                        lb = v
-                        lx = x
-                        ly = y
+                var lb = -2f
+                var lx = 0
+                var ly = 0
+                var y = 0
+                while (y <= fh - th) {
+                    var x = 0
+                    while (x <= fw - tw) {
+                        val n = ncc(fGray, igS, igQ, w1, tGray, tgM, tgS, x, y, tw, th, fw, area)
+                        val e = if (teS >= 1e-3f) ncc(fEdge, ieS, ieQ, w1, tEdge, teM, teS, x, y, tw, th, fw, area) else n
+                        val v = if (n > e) n else e
+                        if (v > lb) {
+                            lb = v
+                            lx = x
+                            ly = y
+                        }
+                        x += step
                     }
-                    x += step
+                    y += step
                 }
-                y += step
-            }
 
-            // ② 精修：最优点 ±step 范围内逐像素搜，保证点得准
-            val ry0 = max(0, ly - step)
-            val ry1 = min(fh - th, ly + step)
-            val rx0 = max(0, lx - step)
-            val rx1 = min(fw - tw, lx + step)
-            for (yy in ry0..ry1) {
-                for (xx in rx0..rx1) {
-                    val n = ncc(fGray, igS, igQ, w1, tGray, tgM, tgS, xx, yy, tw, th, fw, area)
-                    val e = if (teS >= 1e-3f) ncc(fEdge, ieS, ieQ, w1, tEdge, teM, teS, xx, yy, tw, th, fw, area) else n
-                    val v = if (n > e) n else e
-                    if (v > lb) {
-                        lb = v
-                        lx = xx
-                        ly = yy
+                // ② 精修：最优点 ±step 范围内逐像素搜，保证点得准
+                val ry0 = max(0, ly - step)
+                val ry1 = min(fh - th, ly + step)
+                val rx0 = max(0, lx - step)
+                val rx1 = min(fw - tw, lx + step)
+                for (yy in ry0..ry1) {
+                    for (xx in rx0..rx1) {
+                        val n = ncc(fGray, igS, igQ, w1, tGray, tgM, tgS, xx, yy, tw, th, fw, area)
+                        val e = if (teS >= 1e-3f) ncc(fEdge, ieS, ieQ, w1, tEdge, teM, teS, xx, yy, tw, th, fw, area) else n
+                        val v = if (n > e) n else e
+                        if (v > lb) {
+                            lb = v
+                            lx = xx
+                            ly = yy
+                        }
                     }
                 }
-            }
 
-            if (lb > best) {
-                best = lb
-                bx = lx
-                by = ly
-                bestTW = tw
-                bestTH = th
+                if (lb > best) {
+                    best = lb
+                    bx = lx
+                    by = ly
+                    bestTW = tw
+                    bestTH = th
+                    bestVariant = ti
+                }
+                // 命中即提前退出（后续尺度几乎不会更准，且省时间）
+                if (threshold > 0f && best >= threshold) break@outer
             }
-            // 命中即提前退出（后续尺度几乎不会更准，且省时间）
-            if (threshold > 0f && best >= threshold) break
         }
 
         if (best < -1.5f) return Result(false, 0, 0, -2f, 0, 0)
 
         val found = best >= threshold
-        val fullX = ((bx + bestTW / 2) / fs).toInt()
-        val fullY = ((by + bestTH / 2) / fs).toInt()
+        // 还原到原图坐标（含 ROI 偏移）
+        val fullX = ((bx + bestTW / 2) / fs + ox).toInt()
+        val fullY = ((by + bestTH / 2) / fs + oy).toInt()
         val fullW = (bestTW / fs).toInt()
         val fullH = (bestTH / fs).toInt()
-        return Result(found, fullX, fullY, best, fullW, fullH)
+        return Result(found, fullX, fullY, best, fullW, fullH, bestVariant)
     }
 
     /** 单个位置的 NCC（均值/方差走积分图，O(1)）；交叉项 O(tw·th) 无法省，靠小模板+步长控制耗时 */

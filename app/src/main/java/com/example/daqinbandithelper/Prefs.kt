@@ -13,15 +13,61 @@ class Prefs(context: Context) {
     private val dir = File(context.filesDir, "templates").also { it.mkdirs() }
 
     fun tplFile(name: String) = File(dir, "$name.png")
-    fun hasTemplate(name: String) = tplFile(name).exists()
-    fun saveTemplate(name: String, bmp: Bitmap) =
-        tplFile(name).outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-    fun loadTemplate(name: String): Bitmap? {
-        val f = tplFile(name)
-        if (!f.exists()) return null
-        return BitmapFactory.decodeFile(f.absolutePath)
+
+    fun hasTemplate(name: String): Boolean = templateCount(name) > 0
+
+    /** 某模板已采集的变体数量（多模板兜底用） */
+    fun templateCount(name: String): Int {
+        val c = sp.getInt("tpl_count_$name", -1)
+        if (c >= 0) return c
+        // 兼容旧版单文件存储：存在 name.png 视为 1 张
+        return if (tplFile(name).exists()) 1 else 0
     }
-    fun templateCount(): Int = C.TPL_ORDER.count { hasTemplate(it) }
+
+    /** 旧版单文件 name.png → 新多模板 name.0.png */
+    private fun migrateIfNeeded(name: String) {
+        val legacy = tplFile(name)
+        if (sp.getInt("tpl_count_$name", -1) < 0
+            && legacy.exists()
+            && !File(dir, "$name.0.png").exists()
+        ) {
+            legacy.renameTo(File(dir, "$name.0.png"))
+            sp.edit().putInt("tpl_count_$name", 1).apply()
+        }
+    }
+
+    /** 追加一张同模板变体（建议对同一按钮截 2~3 张不同状态：常态/高亮/半透明） */
+    fun saveTemplate(name: String, bmp: Bitmap) {
+        migrateIfNeeded(name)
+        val c = sp.getInt("tpl_count_$name", 0)
+        File(dir, "$name.$c.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        sp.edit().putInt("tpl_count_$name", c + 1).apply()
+        Diag.log("模板", "保存变体 ${C.TPL_LABELS[name] ?: name} #$c（共 ${c + 1} 张）")
+    }
+
+    /** 读取某模板的全部变体 */
+    fun loadTemplates(name: String): List<Bitmap> {
+        migrateIfNeeded(name)
+        val c = sp.getInt("tpl_count_$name", 0)
+        val out = mutableListOf<Bitmap>()
+        for (i in 0 until c) {
+            val f = File(dir, "$name.$i.png")
+            if (f.exists()) BitmapFactory.decodeFile(f.absolutePath)?.let { out.add(it) }
+        }
+        return out
+    }
+
+    fun loadTemplate(name: String): Bitmap? = loadTemplates(name).firstOrNull()
+
+    fun removeTemplate(name: String) {
+        val c = sp.getInt("tpl_count_$name", 0)
+        for (i in 0 until c) File(dir, "$name.$i.png").delete()
+        tplFile(name).delete()
+        sp.edit().remove("tpl_count_$name").apply()
+    }
+
+    /** 已采集的模板“种类”数（用于界面显示与启动校验） */
+    fun templateCount(): Int = C.TPL_ORDER.count { templateCount(it) > 0 }
 
     var minLevel: Int
         get() = sp.getInt("min_level", 1)
