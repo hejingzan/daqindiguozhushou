@@ -112,7 +112,7 @@ class BotEngine(private val ctx: android.content.Context) {
             notFound = 0
             lastBanditX = m.x
             lastBanditY = m.y
-            status("S1 发现盗匪 命中=${"%.2f".format(m.score)}（变体#$m.variant）")
+            status("S1 发现盗匪 命中=${"%.2f".format(m.score)}（变体#${m.variant}）")
             if (levelOk(bmp, m.x, m.y)) {
                 tap(m.x, m.y, "盗匪")
                 enter(C.S2_VALIDATE)
@@ -147,7 +147,7 @@ class BotEngine(private val ctx: android.content.Context) {
         val m = TemplateMatcher.matchMulti(bmp, tpls, thr(), roi)
         if (m.found) {
             onHit()
-            status("S2 找到讨伐 命中=${"%.2f".format(m.score)}（变体#$m.variant）")
+            status("S2 找到讨伐 命中=${"%.2f".format(m.score)}（变体#${m.variant}）")
             tap(m.x, m.y, "讨伐")
             selectedAll = false
             enter(C.S25_SELECT)
@@ -169,7 +169,7 @@ class BotEngine(private val ctx: android.content.Context) {
             val m = TemplateMatcher.matchMulti(bmp, tplsAll, thr(), roiFor(C.TPL_SELECT_ALL, bmp.width, bmp.height))
             if (m.found) {
                 onHit()
-                status("S25 找到全选 命中=${"%.2f".format(m.score)}（变体#$m.variant）")
+                status("S25 找到全选 命中=${"%.2f".format(m.score)}（变体#${m.variant}）")
                 tap(m.x, m.y, "全选")
                 selectedAll = true
                 return
@@ -182,7 +182,7 @@ class BotEngine(private val ctx: android.content.Context) {
             val m = TemplateMatcher.matchMulti(bmp, tplsOk, thr(), roiFor(C.TPL_CONFIRM_TROOP, bmp.width, bmp.height))
             if (m.found) {
                 onHit()
-                status("S25 找到确定(选队伍) 命中=${"%.2f".format(m.score)}（变体#$m.variant）")
+                status("S25 找到确定(选队伍) 命中=${"%.2f".format(m.score)}（变体#${m.variant}）")
                 tap(m.x, m.y, "确定队伍")
                 selectedAll = false
                 enter(C.S3_MARCH)
@@ -209,7 +209,7 @@ class BotEngine(private val ctx: android.content.Context) {
         val m = TemplateMatcher.matchMulti(bmp, tpls, thr(), roiFor(C.TPL_MARCH, bmp.width, bmp.height))
         if (m.found) {
             onHit()
-            status("S3 确认出征 命中=${"%.2f".format(m.score)}（变体#$m.variant）")
+            status("S3 确认出征 命中=${"%.2f".format(m.score)}（变体#${m.variant}）")
             tap(m.x, m.y, "确认出征")
             enter(C.S4_WAIT)
         } else {
@@ -236,7 +236,7 @@ class BotEngine(private val ctx: android.content.Context) {
             val m = TemplateMatcher.matchMulti(bmp, tpls, thr(), roiFor(C.TPL_CONFIRM, bmp.width, bmp.height))
             if (m.found) {
                 onHit()
-                status("S4 出现领奖 命中=${"%.2f".format(m.score)}（变体#$m.variant）")
+                status("S4 出现领奖 命中=${"%.2f".format(m.score)}（变体#${m.variant}）")
                 if (ready()) tap(m.x, m.y, "确定领奖")
                 cycle++
                 status("✔ 完成第 $cycle 轮")

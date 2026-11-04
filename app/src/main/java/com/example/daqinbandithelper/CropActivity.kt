@@ -142,7 +142,7 @@ class CropActivity : AppCompatActivity() {
             else -> ""
         }
         val tip = if (n < 3) "\n可换一种状态再点📷截图追加（建议 2~3 张）" else "\n已采集 $n 张，足够"
-        Toast.makeText(this, "已保存「${C.TPL_LABELS[name] ?: name}」第$n张 ${bw}×${bh}px$warn$tip", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "已保存「${C.TPL_LABELS[name] ?: name}」第${n}张 ${bw}×${bh}px$warn$tip", Toast.LENGTH_SHORT).show()
         finish()
     }
 }
