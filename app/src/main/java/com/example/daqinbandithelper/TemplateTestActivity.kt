@@ -108,8 +108,8 @@ class TemplateTestActivity : AppCompatActivity() {
                     imageView.setImageBitmap(annotated)
                     val verdict = when {
                         r.score >= 0.8f -> "✅ 能稳定识别，红框已框中目标"
-                        r.score >= 0.6f -> "⚠ 偏弱，可能偶尔漏判。建议重截该模板(只框图标本身)，或把『匹配阈值』调到 0.7 左右"
-                        else -> "❌ 几乎识别不到（最高分 ${"%.2f".format(r.score)}）。请重截「${C.TPL_LABELS[name]}」：只框图标/按钮本身，少带背景与透明边"
+                        r.score >= 0.65f -> "⚠ 偏弱（最高分 ${"%.2f".format(r.score)}），可能偶尔漏判。建议重截该模板(只框图标本身、少带背景)，或把『匹配阈值』调低一点"
+                        else -> "❌ 几乎识别不到（最高分 ${"%.2f".format(r.score)}）。请确认当前画面确实有该目标，并重截「${C.TPL_LABELS[name]}」：只框图标/按钮本身，少带背景与透明边"
                     }
                     textResult.text = "模板：${C.TPL_LABELS[name]}\n最高分：${"%.2f".format(r.score)}\n$verdict"
                     btnTest.isEnabled = true

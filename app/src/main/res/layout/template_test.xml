@@ -20,7 +20,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="选一个模板 → 点截屏。会截一张游戏画面，并用红框标出机器人“认为”的目标位置。\n如果红框没框中盗匪图标，说明模板没截好，请回去重新采集。"
+            android:text="选一个模板 → 点截屏。会截一张游戏画面，并用红框标出机器人“认为”的目标位置。\n⚠ 测试时请让游戏画面里【真的出现】该目标：例如测“盗匪图标”要让盗匪在地图上可见；测“讨伐”必须已点开讨伐面板、按钮在屏幕上。若目标不在当前画面，分数低是正常的（只是噪声匹配）。\n如果红框没框中目标，说明模板没截好，请回去重新采集。"
             android:textSize="12sp"
             android:layout_marginBottom="8dp" />
 

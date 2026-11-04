@@ -6,22 +6,22 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * 纯 Kotlin 实现的模板匹配（归一化互相关 NCC，与 OpenCV matchTemplate TM_CCOEFF_NORMED 同原理）。
+ * 纯 Kotlin 模板匹配（归一化互相关 NCC，与 OpenCV matchTemplate TM_CCOEFF_NORMED 同原理）。
  * 零原生依赖，避免 OpenCV 原生库加载失败导致崩溃。
  *
- * 关键点（v4.0.8 重写）：
- * 旧版把帧图和模板按"同一比例 s"一起缩放，且 s 受 MIN_TPL/MAX_TPL 约束。
- * 当模板是在不同缩放比下截的（例如旧版本把截图压到 480 长边，模板只有 ~14px；而现版本
- * 原图 2772 长边，盗匪在屏上约 80px），s 被迫取 1，模板永远缩不上去，NCC 只有 0.3 左右，
- * 表现为"一直找不到盗匪"。
+ * v4.0.9 重写要点（修复"缩放不一致 / 永远 0.7 分"）：
+ * 旧版在【工作图】下用"绝对像素边长"(16~80px)穷举尺度，但用户截的模板是设备原分辨率
+ * （例如 90px），缩到工作图后实际只有 ~20px，落在 16 与 24 两个档位之间，永远到不了真实大小，
+ * 于是 NCC 卡在 0.3~0.7。
  *
- * 现改为【多尺度 / 尺度无关】匹配：
- *  1) 帧图只往下缩到 MAX_FRAME 以内（控制耗时）；
- *  2) 用"绝对目标边长"在【工作图坐标系】下穷举若干尺度（16~80px），把模板分别缩到这些边长
- *     去匹配——无论你当初把模板截大截小、游戏缩放多少，总能找到最贴合的一档；
- *  3) 粗搜 + 最优点 ±3px 精修，保证点击坐标准确；
- *  4) 未命中也返回全局最高分（score）与命中框尺寸（w,h），便于诊断"差多少 / 框在哪"。
- *  5) 命中即提前退出，正常匹配很快；只有真正找不到时才会扫完所有尺度。
+ * 现改为【尺度相对】搜索：
+ *  1) 帧图只往下缩到 MAX_FRAME 以内；
+ *  2) 以模板"自身尺寸在工作图中的自然大小(natural = tplMax * fs)"为中心，乘以 0.3~3.0 倍穷举尺度，
+ *     这样无论当初怎么截、游戏地图放大/缩小到什么程度，总能有一档贴近真实大小；
+ *  3) 同时跑【灰度 NCC】和【边缘 NCC】，取两者较高者——边缘对背景色/抗锯齿不敏感，
+ *     在图标/按钮大小随缩放变化、或模板带了一点背景时都更稳；
+ *  4) 粗扫 + 最优点 ±step 逐像素精修，保证点得准；
+ *  5) 命中（达到阈值）即提前退出，正常很快；只有真找不到时才扫完所有尺度。
  */
 object TemplateMatcher {
 
@@ -35,12 +35,21 @@ object TemplateMatcher {
     )
 
     /** 帧图长边上限（越大越准越慢） */
-    private const val MAX_FRAME = 640
+    private const val MAX_FRAME = 600
 
-    /** 在工作图坐标系下尝试的模板长边（px）。覆盖小图标到大按钮，密集在小尺寸段。 */
-    private val TARGET_LONGS = intArrayOf(16, 24, 34, 46, 60, 80)
+    /**
+     * 相对模板自身尺寸（经帧图缩放后）的尺度搜索：0.3x~3.0x。
+     * 覆盖游戏中地图放大/缩小导致图标大小变化的全部情形。1.0 强制包含（最贴近原截尺寸）。
+     */
+    private val SCALES: FloatArray by lazy {
+        val l = mutableListOf<Float>()
+        var s = 0.30f
+        while (s <= 3.01f) { l.add(s); s *= 1.2f }
+        l.add(1.0f)
+        l.sort()
+        l.toFloatArray()
+    }
 
-    /** 转灰度亮度数组 */
     private fun gray(bmp: Bitmap): FloatArray {
         val w = bmp.width
         val h = bmp.height
@@ -49,25 +58,65 @@ object TemplateMatcher {
         val g = FloatArray(w * h)
         for (i in px.indices) {
             val c = px[i]
-            val r = (c shr 16) and 0xFF
-            val gc = (c shr 8) and 0xFF
-            val b = c and 0xFF
-            g[i] = 0.299f * r + 0.587f * gc + 0.114f * b
+            g[i] = 0.299f * ((c shr 16) and 0xFF) + 0.587f * ((c shr 8) and 0xFF) + 0.114f * (c and 0xFF)
         }
         return g
     }
 
-    private fun scale(src: Bitmap, scale: Float): Bitmap {
-        if (scale >= 0.999f && scale <= 1.001f) return src
-        val w = (src.width * scale).toInt().coerceAtLeast(1)
-        val h = (src.height * scale).toInt().coerceAtLeast(1)
+    /** Sobel 梯度幅值（边缘图）：对背景色/亮度变化不敏感，缩放也较 tolerant */
+    private fun edges(g: FloatArray, w: Int, h: Int): FloatArray {
+        val out = FloatArray(w * h)
+        for (y in 1 until h - 1) {
+            val row = y * w
+            for (x in 1 until w - 1) {
+                val i = row + x
+                val gx = g[i + 1] - g[i - 1]
+                val gy = g[i + w] - g[i - w]
+                out[i] = sqrt(gx * gx + gy * gy)
+            }
+        }
+        return out
+    }
+
+    private fun scale(src: Bitmap, s: Float): Bitmap {
+        if (s >= 0.999f && s <= 1.001f) return src
+        val w = (src.width * s).toInt().coerceAtLeast(1)
+        val h = (src.height * s).toInt().coerceAtLeast(1)
         return Bitmap.createScaledBitmap(src, w, h, true)
     }
 
+    /** 积分图：sum 与 sum²，用于 O(1) 求任意窗口均值与方差 */
+    private fun integral(a: FloatArray, fw: Int, fh: Int): Pair<FloatArray, FloatArray> {
+        val w1 = fw + 1
+        val iSum = FloatArray(w1 * (fh + 1))
+        val iSq = FloatArray(w1 * (fh + 1))
+        for (y in 0 until fh) {
+            var rs = 0f
+            var rq = 0f
+            val rb = y * fw
+            for (x in 0 until fw) {
+                val v = a[rb + x]
+                rs += v
+                rq += v * v
+                iSum[(y + 1) * w1 + (x + 1)] = iSum[y * w1 + (x + 1)] + rs
+                iSq[(y + 1) * w1 + (x + 1)] = iSq[y * w1 + (x + 1)] + rq
+            }
+        }
+        return iSum to iSq
+    }
+
+    private fun meanStd(a: FloatArray): Pair<Float, Float> {
+        var m = 0f
+        for (v in a) m += v
+        m /= a.size
+        var v = 0f
+        for (x in a) v += (x - m) * (x - m)
+        return m to sqrt(v / a.size)
+    }
+
     /**
-     * 在 frame 中匹配 template（尺度无关）。
+     * 在 frame 中匹配 template（尺度相对、灰度+边缘双路 NCC）。
      * @param threshold NCC 阈值（0.5~0.98，越大越严格）。传 0 表示"只取最高分、不判命中"，用于自测。
-     * @return 未命中时 found=false，但 score 仍是全局最高相关系数，w/h 为最优点对应模板尺寸（原图坐标系）。
      */
     fun match(frame: Bitmap, template: Bitmap, threshold: Float): Result {
         val frameMax = max(frame.width, frame.height)
@@ -76,57 +125,47 @@ object TemplateMatcher {
         val tplMax = max(tplW, tplH)
         if (frameMax <= 0 || tplMax <= 0) return Result(false, 0, 0, -2f, 0, 0)
 
-        // ① 帧图只往下缩，模板保持原图（在各尺度下分别缩放去匹配）
+        // ① 帧图只往下缩；模板保持原图（在各尺度下分别缩放去匹配）
         val fs = min(1f, MAX_FRAME.toFloat() / frameMax)
         val fBmp = scale(frame, fs)
         val fw = fBmp.width
         val fh = fBmp.height
         if (fw < 8 || fh < 8) return Result(false, 0, 0, -2f, 0, 0)
-        val f = gray(fBmp)
 
-        // 积分图：O(1) 求任意窗口和
+        val fGray = gray(fBmp)
+        val fEdge = edges(fGray, fw, fh)
+        val (igS, igQ) = integral(fGray, fw, fh)
+        val (ieS, ieQ) = integral(fEdge, fw, fh)
         val w1 = fw + 1
-        val ii = FloatArray(w1 * (fh + 1))
-        for (y in 0 until fh) {
-            var row = 0f
-            val rowBase = y * fw
-            for (x in 0 until fw) {
-                row += f[rowBase + x]
-                ii[(y + 1) * w1 + (x + 1)] = ii[y * w1 + (x + 1)] + row
-            }
-        }
+
+        // 模板在工作图中的"自然大小"——尺度搜索以它为中心（×0.3 ~ ×3.0）
+        val natural = tplMax * fs
 
         var best = -2f
         var bx = 0
         var by = 0
         var bestTW = 0
         var bestTH = 0
-        var bestT: FloatArray? = null
-        var bestTMean = 0f
-        var bestTStd = 0f
-        var bestArea = 0f
 
-        for (target in TARGET_LONGS) {
-            if (target > min(fw, fh) / 2) break
-            val sc = target.toFloat() / tplMax
-            if (sc <= 0f) continue
+        for (s in SCALES) {
+            val target = natural * s
+            if (target < 6f || target > min(fw, fh) * 0.95f) continue
+            val sc = target / tplMax
             val tw = max(6, (tplW * sc).toInt())
             val th = max(6, (tplH * sc).toInt())
             if (tw > fw || th > fh) continue
 
             val tBmp = scale(template, sc)
-            val t = gray(tBmp)
-            var tMean = 0f
-            for (v in t) tMean += v
-            tMean /= t.size
-            var tVar = 0f
-            for (v in t) tVar += (v - tMean) * (v - tMean)
-            val tStd = sqrt(tVar)
-            if (tStd < 1e-4f) continue
+            val tGray = gray(tBmp)
+            val tEdge = edges(tGray, tw, th)
+            tBmp.recycle()
+            val (tgM, tgS) = meanStd(tGray)
+            val (teM, teS) = meanStd(tEdge)
+            if (tgS < 1e-3f && teS < 1e-3f) continue
             val area = (tw * th).toFloat()
 
             // 大模板用更大步长，缩小扫描量
-            val step = if (tw >= 64) max(2, fw / 80) else max(1, fw / 130)
+            val step = max(2, tw / 4)
 
             var lb = -2f
             var lx = 0
@@ -135,9 +174,11 @@ object TemplateMatcher {
             while (y <= fh - th) {
                 var x = 0
                 while (x <= fw - tw) {
-                    val ncc = nccAt(f, ii, w1, t, tMean, tStd, x, y, tw, th, fw, area)
-                    if (ncc > lb) {
-                        lb = ncc
+                    val n = ncc(fGray, igS, igQ, w1, tGray, tgM, tgS, x, y, tw, th, fw, area)
+                    val e = if (teS >= 1e-3f) ncc(fEdge, ieS, ieQ, w1, tEdge, teM, teS, x, y, tw, th, fw, area) else n
+                    val v = if (n > e) n else e
+                    if (v > lb) {
+                        lb = v
                         lx = x
                         ly = y
                     }
@@ -146,71 +187,69 @@ object TemplateMatcher {
                 y += step
             }
 
+            // ② 精修：最优点 ±step 范围内逐像素搜，保证点得准
+            val ry0 = max(0, ly - step)
+            val ry1 = min(fh - th, ly + step)
+            val rx0 = max(0, lx - step)
+            val rx1 = min(fw - tw, lx + step)
+            for (yy in ry0..ry1) {
+                for (xx in rx0..rx1) {
+                    val n = ncc(fGray, igS, igQ, w1, tGray, tgM, tgS, xx, yy, tw, th, fw, area)
+                    val e = if (teS >= 1e-3f) ncc(fEdge, ieS, ieQ, w1, tEdge, teM, teS, xx, yy, tw, th, fw, area) else n
+                    val v = if (n > e) n else e
+                    if (v > lb) {
+                        lb = v
+                        lx = xx
+                        ly = yy
+                    }
+                }
+            }
+
             if (lb > best) {
                 best = lb
                 bx = lx
                 by = ly
                 bestTW = tw
                 bestTH = th
-                bestT = t
-                bestTMean = tMean
-                bestTStd = tStd
-                bestArea = area
             }
-            // 命中即提前退出（后续更大尺度几乎不会更准，且省时间）
+            // 命中即提前退出（后续尺度几乎不会更准，且省时间）
             if (threshold > 0f && best >= threshold) break
         }
 
-        if (best < -1.5f || bestT == null) return Result(false, 0, 0, -2f, 0, 0)
-
-        // ② 精修：在最优尺度、最优点附近 ±3px 逐像素搜，保证点得准
-        val ry0 = max(0, by - 3)
-        val ry1 = min(fh - bestTH, by + 3)
-        val rx0 = max(0, bx - 3)
-        val rx1 = min(fw - bestTW, bx + 3)
-        var ry = by
-        var rx = bx
-        for (yy in ry0..ry1) {
-            for (xx in rx0..rx1) {
-                val ncc = nccAt(f, ii, w1, bestT!!, bestTMean, bestTStd, xx, yy, bestTW, bestTH, fw, bestArea)
-                if (ncc > best) {
-                    best = ncc
-                    rx = xx
-                    ry = yy
-                }
-            }
-        }
+        if (best < -1.5f) return Result(false, 0, 0, -2f, 0, 0)
 
         val found = best >= threshold
-        val fullX = ((rx + bestTW / 2) / fs).toInt()
-        val fullY = ((ry + bestTH / 2) / fs).toInt()
+        val fullX = ((bx + bestTW / 2) / fs).toInt()
+        val fullY = ((by + bestTH / 2) / fs).toInt()
         val fullW = (bestTW / fs).toInt()
         val fullH = (bestTH / fs).toInt()
         return Result(found, fullX, fullY, best, fullW, fullH)
     }
 
-    /** 单个位置的 NCC（窗口均值走积分图） */
-    private fun nccAt(
-        f: FloatArray, ii: FloatArray, w1: Int,
+    /** 单个位置的 NCC（均值/方差走积分图，O(1)）；交叉项 O(tw·th) 无法省，靠小模板+步长控制耗时 */
+    private fun ncc(
+        f: FloatArray, iSum: FloatArray, iSq: FloatArray, w1: Int,
         t: FloatArray, tMean: Float, tStd: Float,
         x: Int, y: Int, tw: Int, th: Int, fw: Int, area: Float
     ): Float {
-        val sum = ii[(y + th) * w1 + (x + tw)] - ii[y * w1 + (x + tw)] -
-                ii[(y + th) * w1 + x] + ii[y * w1 + x]
+        val sum = iSum[(y + th) * w1 + (x + tw)] - iSum[y * w1 + (x + tw)] -
+                iSum[(y + th) * w1 + x] + iSum[y * w1 + x]
+        val sq = iSq[(y + th) * w1 + (x + tw)] - iSq[y * w1 + (x + tw)] -
+                iSq[(y + th) * w1 + x] + iSq[y * w1 + x]
         val fMean = sum / area
+        val fVar = sq - area * fMean * fMean
+        if (fVar <= 1e-6f) return -2f
+        val fStd = sqrt(fVar)
+        val den = fStd * tStd
+        if (den <= 1e-4f) return -2f
         var num = 0f
-        var fVar = 0f
         for (j in 0 until th) {
             val fbase = (y + j) * fw + x
             val tbase = j * tw
             for (i in 0 until tw) {
-                val fd = f[fbase + i] - fMean
-                num += fd * (t[tbase + i] - tMean)
-                fVar += fd * fd
+                num += (f[fbase + i] - fMean) * (t[tbase + i] - tMean)
             }
         }
-        val fStd = sqrt(fVar)
-        val den = fStd * tStd
-        return if (den > 1e-4f) num / den else -2f
+        return num / den
     }
 }
