@@ -132,8 +132,8 @@
         </LinearLayout>
 
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="4dp">
-            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="基础延时(ms)" android:textSize="13sp" android:gravity="center_vertical" />
-            <EditText android:id="@+id/edit_delay" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:inputType="number" android:text="1200" />
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="点击间隔下限(ms)" android:textSize="13sp" android:gravity="center_vertical" />
+            <EditText android:id="@+id/edit_delay" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:inputType="number" android:text="1000" android:hint="1000~2000随机" />
             <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="休眠(秒)" android:textSize="13sp" android:gravity="center_vertical" />
             <EditText android:id="@+id/edit_sleep" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:inputType="number" android:text="300" />
         </LinearLayout>

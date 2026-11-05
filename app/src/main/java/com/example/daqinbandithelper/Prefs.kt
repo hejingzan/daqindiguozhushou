@@ -84,9 +84,13 @@ class Prefs(context: Context) {
     var matchThreshold: Float
         get() = sp.getFloat("match_threshold", 0.8f)
         set(v) = sp.edit().putFloat("match_threshold", v.coerceIn(0.5f, 0.98f)).apply()
+    /**
+     * 点击间隔下限（毫秒）。每次实际间隔 = [baseDelayMs, 2000] 之间随机，整体落在 1~2 秒。
+     * 默认 1000（即最短 1 秒）。
+     */
     var baseDelayMs: Long
-        get() = sp.getLong("base_delay", 1200L)
-        set(v) = sp.edit().putLong("base_delay", v.coerceAtLeast(300L)).apply()
+        get() = sp.getLong("base_delay", 1000L)
+        set(v) = sp.edit().putLong("base_delay", v.coerceIn(1000, 2000)).apply()
     var sleepSec: Int
         get() = sp.getInt("sleep_sec", 300)
         set(v) = sp.edit().putInt("sleep_sec", v).apply()

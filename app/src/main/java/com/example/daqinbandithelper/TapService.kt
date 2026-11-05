@@ -2,10 +2,16 @@ package com.example.daqinbandithelper
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.animation.ValueAnimator
 import android.content.Context
 import android.content.Intent
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -29,6 +35,8 @@ class TapService : AccessibilityService() {
     private var overlayView: View? = null
     private var tvStatus: TextView? = null
     private var wm: WindowManager? = null
+    /** 点击可视化统一走主线程添加/移除 WindowManager */
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
         super.onCreate()
@@ -117,7 +125,37 @@ class TapService : AccessibilityService() {
         val g = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(p, 0, TAP_MS))
             .build()
-        return dispatchGesture(g, null, null)
+        val ok = dispatchGesture(g, null, null)
+        showTapViz(x, y)
+        return ok
+    }
+
+    /**
+     * 在屏幕坐标 (x,y) 处显示一次点击波纹（扩散绿环 + 中心点），约 500ms 后自动消失。
+     * 用 TYPE_ACCESSIBILITY_OVERLAY + NOT_TOUCHABLE，本身不拦截任何触摸，纯视觉反馈。
+     */
+    fun showTapViz(x: Int, y: Int) {
+        mainHandler.post {
+            val wm = getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return@post
+            val size = 120
+            val view = TapVizView(this)
+            val params = WindowManager.LayoutParams(
+                size, size,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                PixelFormat.TRANSLUCENT
+            )
+            params.gravity = Gravity.TOP or Gravity.START
+            params.x = x - size / 2
+            params.y = y - size / 2
+            try {
+                wm.addView(view, params)
+                view.play { try { wm.removeView(view) } catch (_: Exception) {} }
+            } catch (e: Exception) {
+                Log.e("TapService", "tap viz failed", e)
+            }
+        }
     }
 
     fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, dur: Long): Boolean {
@@ -131,4 +169,47 @@ class TapService : AccessibilityService() {
     }
 
     fun back(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)
+}
+
+/**
+ * 点击落点可视化：扩散的绿环 + 中心实心点，随动画推进半径变大、透明度降低，
+ * 约 500ms 播完后通过 onDone 回调让调用方移除自身。坐标以视图中心 (60,60) 为落点。
+ */
+class TapVizView(context: Context) : View(context) {
+    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 5f
+        color = Color.parseColor("#3DFF9E")
+    }
+    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.parseColor("#3DFF9E")
+    }
+    private var progress = 0f
+    private val c = 60f   // 视图尺寸 120 的一半，即落点
+    private var onDone: (() -> Unit)? = null
+
+    fun play(onDone: () -> Unit) {
+        this.onDone = onDone
+        val anim = ValueAnimator.ofFloat(0f, 1f).apply { duration = 500 }
+        anim.addUpdateListener {
+            progress = it.animatedValue as Float
+            postInvalidate()
+        }
+        anim.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                onDone()
+            }
+        })
+        anim.start()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val alpha = ((1f - progress) * 255).toInt().coerceIn(0, 255)
+        val r = 12f + progress * 44f
+        ringPaint.alpha = alpha
+        canvas.drawCircle(c, c, r, ringPaint)
+        dotPaint.alpha = alpha
+        canvas.drawCircle(c, c, 7f, dotPaint)
+    }
 }

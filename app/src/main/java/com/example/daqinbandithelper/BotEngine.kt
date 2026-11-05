@@ -54,9 +54,12 @@ class BotEngine(private val ctx: android.content.Context) {
     }
 
     private fun cooldown(extraMs: Long = 0) {
-        val base = prefs.baseDelayMs
-        val jitter = (base * 0.3f * (random.nextFloat() * 2 - 1)).toLong()
-        nextActionAt = System.currentTimeMillis() + base + jitter + extraMs
+        // 每次点击间隔取 1~2 秒随机值：下限用「点击间隔」设定值（默认 1000ms），上限固定 2000ms。
+        // 随机化避免机械节奏；落在 1~2 秒区间也降低了被游戏判定为脚本的风险。
+        val lo = prefs.baseDelayMs.coerceIn(1000, 2000)
+        val span = (2000 - lo + 1).toInt().coerceAtLeast(1)
+        val d = lo + random.nextInt(span)
+        nextActionAt = System.currentTimeMillis() + d + extraMs
     }
 
     /** 当前生效阈值：连续找不到时逐档放宽，最多放宽 0.10 */

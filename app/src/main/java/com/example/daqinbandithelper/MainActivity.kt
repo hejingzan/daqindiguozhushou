@@ -235,7 +235,7 @@ class MainActivity : AppCompatActivity() {
         val sta = findViewById<EditText>(R.id.edit_stamina).text.toString().toIntOrNull() ?: 20
         val cyc = findViewById<EditText>(R.id.edit_max_cycle).text.toString().toIntOrNull() ?: 30
         val th = findViewById<EditText>(R.id.edit_threshold).text.toString().toFloatOrNull() ?: 0.8f
-        val dl = findViewById<EditText>(R.id.edit_delay).text.toString().toLongOrNull() ?: 1200L
+        val dl = findViewById<EditText>(R.id.edit_delay).text.toString().toLongOrNull() ?: 1000L
         val sl = findViewById<EditText>(R.id.edit_sleep).text.toString().toIntOrNull() ?: 300
         prefs.minLevel = min
         prefs.maxLevel = max
