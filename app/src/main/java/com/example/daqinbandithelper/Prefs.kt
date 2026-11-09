@@ -105,7 +105,7 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putString("battle_mode", v).apply()
     /** ③ 村庄讨伐任务每日上限（4~5 次） */
     var taskLimit: Int
-        get() = sp.getInt("task_limit", C.TASK_LIMIT_DEFAULT)
+        get() = sp.getInt("task_limit", BotConfig.TASK_LIMIT_DEFAULT)
         set(v) = sp.edit().putInt("task_limit", v.coerceIn(1, 20)).apply()
     /** ⑥ 初始讨伐令数量（运行中被 OCR / 流程计数覆盖） */
     var tokenLeft: Int
