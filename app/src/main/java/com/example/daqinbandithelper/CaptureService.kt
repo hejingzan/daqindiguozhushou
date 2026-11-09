@@ -36,7 +36,7 @@ import androidx.core.app.NotificationCompat
 
 /**
  * 截图 + 控制中枢：
- *  - ACTION_START  → 机器人模式（MediaProjection 截图 → BotEngine 状态机 → TapService 点击）
+ *  - ACTION_START  → 挂机模式（三层架构帧驱动：Perception 感知 → FsmEngine 决策 → TapService 执行 Action）
  *  - ACTION_CAPTURE → 采集模式（MediaProjection 截图 → CropActivity 裁图存模板）
  *  - ACTION_STOP   → 停止
  *
@@ -49,7 +49,8 @@ class CaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
-    private var engine: BotEngine? = null
+    private var fsm: FsmEngine? = null
+    private var perception: Perception? = null
     private val handlerThread = HandlerThread("daqin-bot")
     private lateinit var handler: Handler
 
@@ -106,13 +107,18 @@ class CaptureService : Service() {
         prefs = Prefs(this)
         startForegroundSafe()
         val ok = initProjectionSafe(rc, data)
-        engine = BotEngine(this)
+        // 三层架构装配：共享黑板由 FSM 重置，感知层只读画面，执行层只消费 Action
+        val f = FsmEngine(this)
+        f.setStatusCallback { s -> setStatus(s) }
+        f.reset()
+        fsm = f
+        perception = Perception(this)
+        BotController.fsm = f
         running = true
         mode = MODE_BOT
         BotController.captureService = this
         BotController.running = true
         BotController.captureMode = false
-        engine?.setStatusCallback { s -> setStatus(s) }
         overlayRetry = 0
         showOverlay(if (ok) "挂机中…（点击停止可结束）" else "⚠ 录屏失败，请看下方日志")
         if (ok) scheduleLoop()
@@ -190,7 +196,8 @@ class CaptureService : Service() {
     }
 
     private fun scheduleLoop() {
-        handler.postDelayed({ loop() }, 500)
+        // 帧间隔同样走高斯随机 + 夜间降频，打破固定时间周期
+        handler.postDelayed({ loop() }, Humanizer.frameDelayMs())
     }
 
     private fun loop() {
@@ -201,7 +208,29 @@ class CaptureService : Service() {
                 val bmp = imageToBitmap(img)
                 img.close()
                 if (bmp != null) {
-                    engine?.processFrame(bmp)
+                    try {
+                        // ① 感知 → ② 决策（产出单个 Action）→ ③ 执行
+                        val p = perception?.sense(bmp)
+                        val f = fsm
+                        if (p != null && f != null) {
+                            Blackboard.incr("run.tick")
+                            val a = f.step(p)
+                            val tap = TapService.instance
+                            if (tap != null) {
+                                tap.execute(a)
+                            } else {
+                                setStatus("⚠ 无障碍未连接，无法点击")
+                            }
+                            if (a.kind == "stop") {
+                                bmp.recycle()
+                                requestStop()
+                                return
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Diag.log("帧", "处理异常：${e.javaClass.simpleName}: ${e.message}")
+                        Log.e("CaptureService", "frame error", e)
+                    }
                     bmp.recycle()
                 }
             }
@@ -341,7 +370,7 @@ class CaptureService : Service() {
     }
 
     fun setStatus(s: String) {
-        tvStatus?.text = s
+        uiHandler.post { tvStatus?.text = s }
     }
 
     fun hideOverlay() {
@@ -371,6 +400,7 @@ class CaptureService : Service() {
         BotController.running = false
         BotController.captureMode = false
         BotController.captureService = null
+        BotController.fsm = null
         hideOverlay()
         try {
             handler.removeCallbacksAndMessages(null)

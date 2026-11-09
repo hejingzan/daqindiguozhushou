@@ -114,6 +114,15 @@ class MainActivity : AppCompatActivity() {
         cb.isChecked = prefs.ocrEnabled
         cb.setOnCheckedChangeListener { _, isChecked -> prefs.ocrEnabled = isChecked }
 
+        // ② 战斗模式一键切换：挂机中切到本界面改动也会立即写入黑板
+        val rgMode = findViewById<RadioGroup>(R.id.rg_mode)
+        if (prefs.mode == "field") rgMode.check(R.id.rb_field) else rgMode.check(R.id.rb_punitive)
+        rgMode.setOnCheckedChangeListener { _, checkedId ->
+            val m = if (checkedId == R.id.rb_field) "field" else "punitive"
+            prefs.mode = m
+            if (BotController.running) BotController.fsm?.setMode(m)
+        }
+
         // 回填已存参数
         setText(R.id.edit_min_level, prefs.minLevel.toString())
         setText(R.id.edit_max_level, prefs.maxLevel.toString())
@@ -122,6 +131,8 @@ class MainActivity : AppCompatActivity() {
         setText(R.id.edit_threshold, prefs.matchThreshold.toString())
         setText(R.id.edit_delay, prefs.baseDelayMs.toString())
         setText(R.id.edit_sleep, prefs.sleepSec.toString())
+        setText(R.id.edit_task_limit, prefs.taskLimit.toString())
+        setText(R.id.edit_token, prefs.tokenLeft.toString())
 
         Diag.log("界面", "App 启动，系统=${Build.VERSION.RELEASE} SDK=${Build.VERSION.SDK_INT}")
     }
@@ -237,6 +248,11 @@ class MainActivity : AppCompatActivity() {
         val th = findViewById<EditText>(R.id.edit_threshold).text.toString().toFloatOrNull() ?: 0.8f
         val dl = findViewById<EditText>(R.id.edit_delay).text.toString().toLongOrNull() ?: 1000L
         val sl = findViewById<EditText>(R.id.edit_sleep).text.toString().toIntOrNull() ?: 300
+        val tl = findViewById<EditText>(R.id.edit_task_limit).text.toString().toIntOrNull()
+            ?: BotConfig.TASK_LIMIT_DEFAULT
+        val tk = findViewById<EditText>(R.id.edit_token).text.toString().toIntOrNull() ?: 20
+        val md = if (findViewById<RadioGroup>(R.id.rg_mode).checkedRadioButtonId == R.id.rb_field)
+            "field" else "punitive"
         prefs.minLevel = min
         prefs.maxLevel = max
         prefs.staminaMin = sta
@@ -244,6 +260,9 @@ class MainActivity : AppCompatActivity() {
         prefs.matchThreshold = th
         prefs.baseDelayMs = dl
         prefs.sleepSec = sl
+        prefs.taskLimit = tl
+        prefs.tokenLeft = tk
+        prefs.mode = md
     }
 
     private fun launchCapture() {

@@ -97,6 +97,21 @@ class Prefs(context: Context) {
     var ocrEnabled: Boolean
         get() = sp.getBoolean("ocr_enabled", false)
         set(v) = sp.edit().putBoolean("ocr_enabled", v).apply()
+
+    // ---- v5.0.0 三层架构新增 ----
+    /** ② 战斗模式：punitive=讨伐(消耗讨伐令) / field=野战(不消耗) */
+    var mode: String
+        get() = sp.getString("battle_mode", "punitive") ?: "punitive"
+        set(v) = sp.edit().putString("battle_mode", v).apply()
+    /** ③ 村庄讨伐任务每日上限（4~5 次） */
+    var taskLimit: Int
+        get() = sp.getInt("task_limit", C.TASK_LIMIT_DEFAULT)
+        set(v) = sp.edit().putInt("task_limit", v.coerceIn(1, 20)).apply()
+    /** ⑥ 初始讨伐令数量（运行中被 OCR / 流程计数覆盖） */
+    var tokenLeft: Int
+        get() = sp.getInt("token_left", 20)
+        set(v) = sp.edit().putInt("token_left", v.coerceIn(0, 9999)).apply()
+
     var offsetPx: Int
         get() = sp.getInt("offset_px", 6)
         set(v) = sp.edit().putInt("offset_px", v.coerceIn(0, 40)).apply()

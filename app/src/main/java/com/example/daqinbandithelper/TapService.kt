@@ -103,7 +103,8 @@ class TapService : AccessibilityService() {
     }
 
     fun setStatus(s: String) {
-        tvStatus?.text = s
+        // 帧循环在后台线程，TextView 必须回主线程更新，否则 CalledFromWrongThreadException
+        mainHandler.post { tvStatus?.text = s }
     }
 
     fun hideOverlay() {
@@ -118,7 +119,7 @@ class TapService : AccessibilityService() {
     }
 
     /** 单次点击。时长过短（如 1ms）部分游戏吃不到，这里用 60ms 保证被识别为一次有效点击。 */
-    fun tap(x: Int, y: Int): Boolean {
+    fun tap(x: Int, y: Int, label: String = ""): Boolean {
         val p = Path()
         p.moveTo(x.toFloat(), y.toFloat())
         p.lineTo(x.toFloat() + 1f, y.toFloat() + 1f)
@@ -127,7 +128,67 @@ class TapService : AccessibilityService() {
             .build()
         val ok = dispatchGesture(g, null, null)
         showTapViz(x, y)
+        Diag.log("执行", "点击 $label @($x,$y)")
         return ok
+    }
+
+    /**
+     * 执行层入口：消费决策层产出的单个 Action，加防封包装后落到无障碍手势。
+     * 只写黑板 exec.*，不感知、不改 FSM 状态。
+     */
+    fun execute(a: Action) {
+        when (a.kind) {
+            "tap" -> {
+                // 低概率误点空白区域，模拟人手失误（不构成有效指令）
+                if (Humanizer.shouldMisclick()) {
+                    val w = Blackboard.i("percept.frameW", 1080)
+                    val h = Blackboard.i("percept.frameH", 1920)
+                    val (bx, by) = Humanizer.blankPoint(w, h)
+                    Diag.log("防封", "误点空白 ($bx,$by)")
+                    tap(bx, by, "误点空白")
+                }
+                // 每次点击 ±3~6px 随机偏移
+                val (dx, dy) = Humanizer.offset()
+                tap(a.x + dx, a.y + dy, "${a.label} 偏移($dx,$dy)")
+                Blackboard.incr("exec.actions")
+            }
+            "swipe" -> {
+                val ok = swipeBezier(a.x, a.y, a.x2, a.y2, a.durationMs)
+                Diag.log("执行", "拖动地图 (${a.x},${a.y})->(${a.x2},${a.y2}) ok=$ok")
+                Blackboard.incr("exec.actions")
+            }
+            "back" -> {
+                back()
+                Diag.log("执行", "返回 / 关闭弹窗")
+                Blackboard.incr("exec.actions")
+            }
+            "idle" -> {
+                val ms = (a.seconds * 1000f).toLong()
+                Blackboard.set("exec.pauseUntil", System.currentTimeMillis() + ms)
+                val secText = "%.1f".format(a.seconds)
+                Diag.log("执行", "${a.label}，暂停 ${secText}s")
+            }
+            "wait" -> Unit
+            "stop" -> {
+                Diag.log("执行", "⑤ 安全终止：${a.label}")
+                BotController.stop()
+            }
+        }
+    }
+
+    /** 多段贝塞尔轨迹拖动地图：用手势路径逐点插值，杜绝瞬移 */
+    private fun swipeBezier(x1: Int, y1: Int, x2: Int, y2: Int, dur: Long): Boolean {
+        val pts = Humanizer.bezier(x1, y1, x2, y2)
+        val p = Path()
+        p.moveTo(pts[0].first.toFloat(), pts[0].second.toFloat())
+        for (i in 1 until pts.size) {
+            p.lineTo(pts[i].first.toFloat(), pts[i].second.toFloat())
+        }
+        val d = if (dur > 0) dur else BotConfig.SWIPE_DURATION_MS
+        val g = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(p, 0, d))
+            .build()
+        return dispatchGesture(g, null, null)
     }
 
     /**
